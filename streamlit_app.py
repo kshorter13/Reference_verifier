@@ -24,36 +24,38 @@ class ReferenceParser:
             'journal_year_in_parentheses': r'\((\d{4}[a-z]?)\)',
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
             'journal_info': r'([A-Za-z][^,\d]*[A-Za-z]),',
-            'volume_pages': r'(\d+)(?:\\((\d+)\\))?,?\\s*(\\d+(?:-\\d+)?)', # Escaped parentheses for regex
-            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier)[^.]*)', # Added Kluwer, Elsevier
+            'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)', # Corrected escaping for regex
+            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier|MIT Press)[^.]*)', # Added Kluwer, Elsevier, MIT Press
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
-            'author_pattern': r'^([^()]+?)(?:\\s*\\(\\d{4}\\))', # Escaped parentheses for regex
-            'isbn_pattern': r'ISBN:?\\s*([\\d-]+)', # Escaped hyphen
+            'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))', # Corrected escaping for regex
+            'isbn_pattern': r'ISBN:?\s*([\d-]+)',
             'url_pattern': r'(https?://[^\s]+)',
             'website_access_date': r'(?:Retrieved|Accessed)\\s+([^,]+)'
         }
         
         self.vancouver_patterns = {
             'starts_with_number': r'^(\d+)\.',
-            'journal_title_section': r'^\\d+\\.\\s*[^.]+\\.\\s*([^.]+)\\.', # Escaped backslashes
-            'journal_year': r'([A-Za-z][^.;]+)[\\s.]*(\\d{4})', # Escaped backslashes
-            'author_pattern_vancouver': r'^\\d+\\.\\s*([^.]+)\\.', # Escaped backslashes
-            'book_publisher': r'([A-Z][^;:]+);\\s*(\\d{4})', # Escaped backslashes
-            'website_url_vancouver': r'Available\\s+(?:from|at):\\s*(https?://[^\s]+)' # Escaped backslashes
+            'journal_title_section': r'^\d+\.\s*[^.]+\.\s*([^.]+)\.', # Corrected escaping for regex
+            'journal_year': r'([A-Za-z][^.;]+)\s*(\d{4})', # Corrected escaping for regex
+            'author_pattern_vancouver': r'^\d+\.\s*([^.]+)\.', # Corrected escaping for regex
+            'book_publisher': r'([A-Z][^;:]+);\s*(\d{4})', # Corrected escaping for regex
+            'website_url_vancouver': r'Available\s+(?:from|at):\s*(https?://[^\s]+)' # Corrected escaping for regex
         }
         
         self.type_indicators = {
             'journal': [
                 r'[,;]\s*\d+(?:\(\d+\))?[,:]\s*\d+(?:-\d+)?',
                 r'Journal|Review|Proceedings|Quarterly|Annual',
-                r'https?://doi\.org/'
+                r'https?://doi\.org/',
+                r'\b(volume|issue|pages|p\.)\b' # Strong journal indicator
             ],
             'book': [
-                r'(?:Press|Publishers?|Publications?|Books?|Academic|University|Kluwer|Elsevier)', # Added Kluwer, Elsevier
+                r'(?:Press|Publishers?|Publications?|Books?|Academic|University|Kluwer|Elsevier|MIT Press)', # Added Kluwer, Elsevier, MIT Press
                 r'ISBN:?\s*[\d-]+',
                 r'(?:pp?\.|pages?)\s*\d+(?:-\d+)?',
                 r'\b(edition|ed\.)\b', # Strong book indicator
-                r'\b(manual|handbook|textbook)\b' # Strong book indicator
+                r'\b(manual|handbook|textbook|guidelines)\b', # Strong book indicator, added guidelines
+                r'\b(vol\.|volume|chapter)\b' # Added vol/chapter for books
             ],
             'website': [
                 r'(?:Retrieved|Accessed)\s+(?:from|on)',
@@ -65,17 +67,21 @@ class ReferenceParser:
     def detect_reference_type(self, ref_text: str) -> str:
         ref_lower = ref_text.lower()
 
-        # Strongest indicators first
+        # 1. Highest priority: DOI -> Journal
         if re.search(self.apa_patterns['doi_pattern'], ref_text):
             return 'journal'
+
+        # 2. Next priority: ISBN -> Book
         if re.search(self.apa_patterns['isbn_pattern'], ref_text):
             return 'book'
-        # Check for website if it has a URL AND an access date/retrieved phrase
+
+        # 3. Strong Website indicator: URL + Access Date/Retrieved phrase
+        # This is crucial to avoid misclassifying books/journals with incidental URLs
         if re.search(self.apa_patterns['url_pattern'], ref_text) and \
            re.search(self.apa_patterns['website_access_date'], ref_text):
             return 'website'
         
-        # Fallback to scoring for less clear cases
+        # 4. Fallback to scoring for less clear cases, or if strong indicators are absent
         type_scores = {'journal': 0, 'book': 0, 'website': 0}
         
         for ref_type, patterns in self.type_indicators.items():
@@ -84,25 +90,36 @@ class ReferenceParser:
                     type_scores[ref_type] += 1
         
         # Boost scores for explicit keywords not covered by direct identifiers
+        # These boosts help differentiate when direct identifiers are missing
         if re.search(r'\b(edition|ed\.)\b', ref_lower) or \
-           re.search(r'\b(manual|handbook|textbook)\b', ref_lower):
-            type_scores['book'] += 1.5 # Boost book score for these strong indicators
+           re.search(r'\b(manual|handbook|textbook|guidelines)\b', ref_lower) or \
+           re.search(r'\b(vol\.|volume|chapter)\b', ref_lower):
+            type_scores['book'] += 2.0 # Increased boost for very strong book indicators
 
         if re.search(r'\b(volume|issue|pages|p\.)\b', ref_lower):
             type_scores['journal'] += 1.5 # Boost journal score
 
+        # Check for common publisher names specifically for books if no strong type detected yet
+        # Only apply this if not already leaning strongly towards journal/website
+        if not (type_scores['journal'] >= 1.5 or type_scores['website'] >= 1.5): # Use score threshold
+            if re.search(r'\b(wolters kluwer|elsevier|mit press|university press)\b', ref_lower):
+                type_scores['book'] += 1.0 # Add a moderate boost for publishers
+
+        # Final decision based on scores, with tie-breaking preference
         if any(score > 0 for score in type_scores.values()):
-            # If multiple types have the same max score, prioritize book > journal > website
             max_score = max(type_scores.values())
+            # Prioritize book if it has the max score
             if type_scores['book'] == max_score and max_score > 0:
                 return 'book'
+            # Then journal
             if type_scores['journal'] == max_score and max_score > 0:
                 return 'journal'
+            # Then website
             if type_scores['website'] == max_score and max_score > 0:
                 return 'website'
-            return max(type_scores, key=type_scores.get) # Fallback to highest score
+            return max(type_scores, key=type_scores.get) # Fallback if tie-breaking rules don't apply uniquely
         else:
-            return 'journal' # Default if nothing strong is found
+            return 'journal' # Default if no indicators are found
 
     def identify_references(self, text: str) -> List[Reference]:
         lines = text.strip().split('\n')
@@ -224,9 +241,9 @@ class ReferenceParser:
         if isbn_match:
             elements['isbn'] = isbn_match.group(1)
 
-        # Only extract generic URL if it's likely a website or no other strong identifier has been found yet
+        # IMPORTANT: Only extract generic URL if the detected type is 'website'.
         # This prevents a book reference from picking up a random URL in its text.
-        if detected_type == 'website' or (not elements['doi'] and not elements['isbn']):
+        if detected_type == 'website':
             url_match = re.search(self.apa_patterns['url_pattern'], ref_text)
             if url_match:
                 elements['url'] = url_match.group(1)
@@ -1056,13 +1073,13 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                 for i, result in enumerate(results):
                     ref_text = result['reference']
                     status = result['overall_status']
-                    ref_type = result.get('reference_type', 'journal')
+                    # ref_type = result.get('reference_type', 'journal') # No longer used in main status line
                     
                     type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
-                    type_icon = type_icons.get(ref_type, '📄')
+                    type_icon = type_icons.get(result.get('reference_type', 'journal'), '📄') # Still use for icon
                     
                     if status == 'valid':
-                        st.success(f"✅ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Verified and Valid")
+                        st.success(f"✅ {type_icon} **Reference {result['line_number']}**: Verified and Valid")
                         st.write(ref_text)
                         
                         existence = result['existence_check']
@@ -1081,31 +1098,35 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                     st.write(f"• **{source_type}**: {description}")
                     
                     elif status == 'structure_error':
-                        st.error(f"🔧 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Structural Format Issues")
+                        st.error(f"🔧 {type_icon} **Reference {result['line_number']}**: Structural Format Issues")
                         st.write(ref_text)
                         
                         issues = result['structure_check'].get('structure_issues', [])
                         if issues:
-                            st.write(f"**Structural problems for {ref_type}:**")
+                            st.write(f"**Structural problems:**")
                             for issue in issues:
                                 st.write(f"• {issue}")
                     
                     elif status == 'content_error':
-                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Content Extraction Issues")
+                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}**: Content Extraction Issues")
                         st.write(ref_text)
-                        st.write(f"**Issue:** Could not extract enough elements to verify this {ref_type} reference.")
+                        st.write(f"**Issue:** Could not extract enough elements to verify this reference.")
                     
                     elif status == 'likely_fake':
-                        st.error(f"🚨 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Likely Fake Reference")
+                        st.error(f"🚨 {type_icon} **Reference {result['line_number']}**: Likely Fake Reference")
                         st.write(ref_text)
                         
                         existence = result['existence_check']
                         search_details = existence.get('search_details', {})
+                        extracted_elements = result['extracted_elements'] # Get extracted elements here
                         
-                        st.write(f"**⚠️ This {ref_type} reference appears to be fabricated or contains significant errors.**")
+                        st.write(f"**⚠️ This reference appears to be fabricated or contains significant errors.**")
                         st.write("**Evidence this reference is questionable:**")
                         
-                        if ref_type == 'journal':
+                        # Use result['reference_type'] for conditional messages
+                        current_ref_type = result.get('reference_type', 'journal')
+
+                        if current_ref_type == 'journal':
                             if 'doi' in search_details and not search_details['doi'].get('valid'):
                                 st.write(f"• DOI check: {search_details['doi'].get('reason', 'DOI does not exist or is invalid')}")
                             if 'comprehensive_journal' in search_details and not search_details['comprehensive_journal'].get('found'):
@@ -1113,10 +1134,10 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                             elif 'comprehensive_journal' in search_details and search_details['comprehensive_journal'].get('found') and search_details['comprehensive_journal'].get('match_score', 0) < 0.7: # Example threshold
                                 st.write(f"• Journal database search: Found a weak match (score: {search_details['comprehensive_journal'].get('match_score', 0):.1%}) but not a strong one for all elements.")
                             # Add a check if URL was present but not used for verification (e.g., if it was a generic website URL for a journal)
-                            if elements['url'] and not results['website_accessible'] and not results['doi_valid'] and not results['comprehensive_journal_found']:
-                                st.write(f"• Note: A URL was found ({elements['url']}) but it did not lead to a verified journal entry and was not treated as a primary website source for this journal reference.")
+                            if extracted_elements.get('url') and not results['website_accessible'] and not results['doi_valid'] and not results['comprehensive_journal_found']:
+                                st.write(f"• Note: A URL was found ({extracted_elements['url']}) but it did not lead to a verified journal entry and was not treated as a primary website source for this journal reference.")
 
-                        elif ref_type == 'book':
+                        elif current_ref_type == 'book':
                             if 'isbn_search' in search_details and not search_details['isbn_search'].get('found'):
                                 st.write(f"• ISBN check: {search_details['isbn_search'].get('reason', 'ISBN not found in Open Library.')}")
                             if 'comprehensive_book' in search_details and not search_details['comprehensive_book'].get('found'):
@@ -1124,10 +1145,10 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                             elif 'comprehensive_book' in search_details and search_details['comprehensive_book'].get('found') and search_details['comprehensive_book'].get('match_score', 0) < 0.7: # Example threshold
                                 st.write(f"• Book database search: Found a weak match (score: {search_details['comprehensive_book'].get('match_score', 0):.1%}) but not a strong one for all elements.")
                             # Add a check if URL was present but not used for verification
-                            if elements['url'] and not results['website_accessible'] and not results['isbn_found'] and not results['comprehensive_book_found']:
-                                st.write(f"• Note: A URL was found ({elements['url']}) but it did not lead to a verified book entry and was not treated as a primary website source for this book reference.")
+                            if extracted_elements.get('url') and not results['website_accessible'] and not results['isbn_found'] and not results['comprehensive_book_found']:
+                                st.write(f"• Note: A URL was found ({extracted_elements['url']}) but it did not lead to a verified book entry and was not treated as a primary website source for this book reference.")
                         
-                        elif ref_type == 'website':
+                        elif current_ref_type == 'website':
                             if 'website_check' in search_details and not search_details['website_check'].get('accessible'):
                                 st.write(f"• Website accessibility: {search_details['website_check'].get('reason', 'Website is not accessible or URL is invalid.')}")
                         
