@@ -24,22 +24,22 @@ class ReferenceParser:
             'journal_year_in_parentheses': r'\((\d{4}[a-z]?)\)',
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
             'journal_info': r'([A-Za-z][^,\d]*[A-Za-z]),',
-            'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)',
+            'volume_pages': r'(\d+)(?:\\((\d+)\\))?,?\\s*(\\d+(?:-\\d+)?)', # Escaped parentheses for regex
             'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier)[^.]*)', # Added Kluwer, Elsevier
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
-            'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))',
-            'isbn_pattern': r'ISBN:?\s*([\d-]+)',
+            'author_pattern': r'^([^()]+?)(?:\\s*\\(\\d{4}\\))', # Escaped parentheses for regex
+            'isbn_pattern': r'ISBN:?\\s*([\\d-]+)', # Escaped hyphen
             'url_pattern': r'(https?://[^\s]+)',
             'website_access_date': r'(?:Retrieved|Accessed)\\s+([^,]+)'
         }
         
         self.vancouver_patterns = {
             'starts_with_number': r'^(\d+)\.',
-            'journal_title_section': r'^\d+\.\s*[^.]+\.\s*([^.]+)\.',
-            'journal_year': r'([A-Za-z][^.;]+)[\s.]*(\d{4})',
-            'author_pattern_vancouver': r'^\d+\.\s*([^.]+)\.',
-            'book_publisher': r'([A-Z][^;:]+);\s*(\d{4})',
-            'website_url_vancouver': r'Available\s+(?:from|at):\s*(https?://[^\s]+)'
+            'journal_title_section': r'^\\d+\\.\\s*[^.]+\\.\\s*([^.]+)\\.', # Escaped backslashes
+            'journal_year': r'([A-Za-z][^.;]+)[\\s.]*(\\d{4})', # Escaped backslashes
+            'author_pattern_vancouver': r'^\\d+\\.\\s*([^.]+)\\.', # Escaped backslashes
+            'book_publisher': r'([A-Z][^;:]+);\\s*(\\d{4})', # Escaped backslashes
+            'website_url_vancouver': r'Available\\s+(?:from|at):\\s*(https?://[^\s]+)' # Escaped backslashes
         }
         
         self.type_indicators = {
@@ -748,33 +748,26 @@ class ReferenceVerifier:
             
             ref_type = self.parser.detect_reference_type(ref.text)
             
-            if format_type == "APA":
-                parsed = self.parser.parse_apa_reference(ref.text)
-            elif format_type == "Vancouver":
-                parsed = self.parser.parse_vancouver_reference(ref.text)
-            else:
-                parsed = {'format_valid': False, 'errors': ['Unknown format']}
-            
-            result['format_valid'] = parsed['format_valid']
-            result['errors'] = parsed['errors']
-            result['parsed_data'] = parsed
+            # Use check_structural_format for format validity and issues
+            structure_check_result = self.parser.check_structural_format(ref.text, format_type, ref_type)
+            result['format_valid'] = structure_check_result['structure_valid']
+            result['errors'] = structure_check_result['structure_issues'] # Use structural issues as format errors
             result['reference_type'] = ref_type
             
-            # Structure Check
-            structure_check = self.parser.check_structural_format(ref.text, format_type, ref_type)
-            result['structure_check'] = structure_check
+            # Structural Check (Level 1)
+            result['structure_check'] = structure_check_result
             
-            if structure_check['structure_valid']:
+            if structure_check_result['structure_valid']:
                 result['structure_status'] = 'valid'
                 
-                # Content Extraction
+                # Content Extraction (Level 2)
                 elements = self.parser.extract_reference_elements(ref.text, format_type, ref_type)
                 result['extracted_elements'] = elements
                 
                 if elements['extraction_confidence'] in ['medium', 'high']:
                     result['content_status'] = 'extracted'
                     
-                    # Existence Verification
+                    # Existence Verification (Level 3)
                     existence_results = self._verify_existence(elements)
                     result['existence_check'] = existence_results
                     
