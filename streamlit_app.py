@@ -25,7 +25,7 @@ class ReferenceParser:
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
             'journal_info': r'([A-Za-z][^,\d]*[A-Za-z]),',
             'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)', # Corrected escaping for regex
-            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier|MIT Press)[^.]*)', # Added Kluwer, Elsevier, MIT Press
+            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier|MIT Press|Human Kinetics)[^.]*)', # Added Human Kinetics
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
             'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))', # Corrected escaping for regex
             'isbn_pattern': r'ISBN:?\s*([\d-]+)',
@@ -50,7 +50,7 @@ class ReferenceParser:
                 r'\b(volume|issue|pages|p\.)\b' # Strong journal indicator
             ],
             'book': [
-                r'(?:Press|Publishers?|Publications?|Books?|Academic|University|Kluwer|Elsevier|MIT Press)', # Added Kluwer, Elsevier, MIT Press
+                r'(?:Press|Publishers?|Publications?|Books?|Academic|University|Kluwer|Elsevier|MIT Press|Human Kinetics)', # Added Human Kinetics
                 r'ISBN:?\s*[\d-]+',
                 r'(?:pp?\.|pages?)\s*\d+(?:-\d+)?',
                 r'\b(edition|ed\.)\b', # Strong book indicator
@@ -102,7 +102,7 @@ class ReferenceParser:
         # Check for common publisher names specifically for books if no strong type detected yet
         # Only apply this if not already leaning strongly towards journal/website
         if not (type_scores['journal'] >= 1.5 or type_scores['website'] >= 1.5): # Use score threshold
-            if re.search(r'\b(wolters kluwer|elsevier|mit press|university press)\b', ref_lower):
+            if re.search(r'\b(wolters kluwer|elsevier|mit press|university press|human kinetics)\b', ref_lower): # Added human kinetics
                 type_scores['book'] += 1.0 # Add a moderate boost for publishers
 
         # Final decision based on scores, with tie-breaking preference
@@ -847,8 +847,9 @@ class DatabaseSearcher:
         # Publisher matching (5% weight)
         publisher_match_score = 0.0
         if target_publisher and item_publisher:
-            if target_publisher.lower() in item_publisher.lower() or \
-               self._calculate_title_similarity(target_publisher, item_publisher) > 0.7:
+            # Use title similarity for publisher as well for flexibility
+            pub_sim = self._calculate_title_similarity(target_publisher, item_publisher)
+            if pub_sim > 0.6: # A reasonable similarity for publisher names
                 publisher_match_score = 0.05
             score += publisher_match_score
         
@@ -1130,6 +1131,7 @@ Australian Government Department of Health and Aged Care. (2021, July 29). Body 
 Coombes, J., & Skinner, T. (2014). ESSA’s student manual for health, exercise and sport assessment. Elsevier.
 Health Direct. (2019). Resting heart rate. Healthdirect.gov.au; Healthdirect Australia. https://www.healthdirect.gov.au/resting-heart-rate
 Kumar, K. (2022, January 12). What Is a Good Resting Heart Rate by Age? MedicineNet. https://www.medicinenet.com/what_is_a_good_resting_heart_rate_by_age/article.htm
+Haff, G. G., & Triplett, N. T. (2016). Essentials of strength training and conditioning (4th ed.). Human Kinetics.
 Powden, C. J., Hoch, J. M., & Hoch, M. C. (2015b). Reliability and Minimal Detectable Change of the weight-bearing Lunge test: a Systematic Review. Manual Therapy, 20(4), 524–532. https://doi.org/10.1016/j.math.2015.01.004
 Ryan, C., Uthoff, A., McKenzie, C., & Cronin, J. (2022). Traditional and modified 5-0-5 change of direction test: Normative and reliability analysis. Strength & Conditioning Journal, 44(4), 22–37. https://doi.org/10.1519/SSC.0000000000000635
 Shrestha, M. (2022). Sit and Reach Test. Physiopedia. https://www.physio-pedia.com/Sit_and_Reach_Test
