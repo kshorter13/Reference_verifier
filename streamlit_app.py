@@ -1,156 +1,4 @@
-def _show_verification_details(self, result: Dict, ref_type: str):
-        """Show type-specific verification details for valid references"""
-        existence = result['existence_check']
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            # Show DOI details for journals
-            doi_details = search_details.get('doi')
-            if doi_details and doi_details.get('valid'):
-                with st.expander("📋 DOI Verification Details"):
-                    st.write(f"**Actual Title:** {doi_details.get('actual_title', 'N/A')}")
-                    if doi_details.get('title_similarity'):
-                        st.write(f"**Title Match Confidence:** {doi_details['title_similarity']:.1%}")
-                    st.write(f"**Authors:** {', '.join(doi_details.get('actual_authors', []))}")
-                    st.write(f"**Journal:** {doi_details.get('actual_journal', 'N/A')}")
-                    st.write(f"**Year:** {doi_details.get('actual_year', 'N/A')}")
-                    if doi_details.get('crossref_url'):
-                        st.markdown(f"**Crossref API:** [{doi_details['crossref_url']}]({doi_details['crossref_url']})")
-        
-        elif ref_type == 'book':
-            # Show book verification details
-            isbn_details = search_details.get('isbn_search')
-            book_details = search_details.get('book_search')
-            
-            if isbn_details and isbn_details.get('found'):
-                with st.expander("📚 ISBN Verification Details"):
-                    st.write(f"**Verified Title:** {isbn_details.get('title', 'N/A')}")
-                    st.write(f"**Authors:** {', '.join(isbn_details.get('authors', []))}")
-                    st.write(f"**Publishers:** {', '.join(isbn_details.get('publishers', []))}")
-                    st.write(f"**Publish Date:** {isbn_details.get('publish_date', 'N/A')}")
-                    st.write(f"**ISBN:** {isbn_details.get('isbn', 'N/A')}")
-            
-            if book_details and book_details.get('found'):
-                with st.expander("📖 Book Database Details"):
-                    st.write(f"**Matched Title:** {book_details.get('matched_title', 'N/A')}")
-                    st.write(f"**Authors:** {', '.join(book_details.get('matched_authors', []))}")
-                    st.write(f"**Publisher:** {book_details.get('publisher', 'N/A')}")
-                    st.write(f"**Publish Year:** {book_details.get('publish_year', 'N/A')}")
-                    if book_details.get('match_score'):
-                        st.write(f"**Match Confidence:** {book_details['match_score']:.1%}")
-        
-        elif ref_type == 'website':
-            # Show website verification details
-            website_details = search_details.get('website_check')
-            if website_details and website_details.get('accessible'):
-                with st.expander("🌐 Website Verification Details"):
-                    st.write(f"**Page Title:** {website_details.get('page_title', 'N/A')}")
-                    st.write(f"**Final URL:** {website_details.get('final_url', 'N/A')}")
-                    st.write(f"**Status Code:** {website_details.get('status_code', 'N/A')}")
-                    st.write(f"**Content Type:** {website_details.get('content_type', 'N/A')}")
-
-    def _show_content_warning_details(self, result: Dict, ref_type: str):
-        """Show why content has warnings based on reference type"""
-        existence = result['existence_check']
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            if 'comprehensive' in search_details:
-                comp_result = search_details['comprehensive']
-                if 'match_score' in comp_result:
-                    st.write(f"**Match confidence:** {comp_result['match_score']:.1%} (below threshold)")
-        
-        elif ref_type == 'book':
-            book_result = search_details.get('book_search', {})
-            if 'match_score' in book_result:
-                st.write(f"**Book match confidence:** {book_result['match_score']:.1%} (below threshold)")
-            if book_result.get('total_results', 0) > 0:
-                st.write(f"**Search found {book_result['total_results']} potential matches, but none were close enough**")
-
-    def _show_fake_evidence(self, result: Dict, ref_type: str):
-        """Show evidence for fake references based on type"""
-        existence = result['existence_check']
-        evidence = []
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            # Enhanced DOI analysis for journals
-            doi_details = search_details.get('doi')
-            if doi_details and not doi_details.get('valid'):
-                reason = doi_details.get('reason', 'Unknown error')
-                if 'Title mismatch' in reason:
-                    evidence.append(f"DOI exists but title doesn't match (Expected: '{doi_details.get('expected_title', 'N/A')}', Actual: '{doi_details.get('actual_title', 'N/A')}')")
-                elif 'does not resolve' in reason:
-                    evidence.append("DOI does not exist or is inaccessible")
-                else:
-                    evidence.append(f"DOI validation failed: {reason}")
-            
-            if existence.get('title_not_found'):
-                evidence.append("Title not found in academic databases")
-            
-            if 'comprehensive' in search_details:
-                comp_result = search_details['comprehensive']
-                if not comp_result.get('found'):
-                    evidence.append(f"No matching journal publications found ({comp_result.get('reason', 'unknown reason')})")
-        
-        elif ref_type == 'book':
-            # Book-specific evidence
-            if 'isbn_search' in search_details:
-                isbn_result = search_details['isbn_search']
-                if not isbn_result.get('found'):
-                    evidence.append(f"ISBN not found in book databases ({isbn_result.get('reason', 'unknown reason')})")
-            
-            if 'book_search' in search_details:
-                book_result = search_details['book_search']
-                if not book_result.get('found'):
-                    evidence.append(f"No matching books found ({book_result.get('reason', 'unknown reason')})")
-        
-        elif ref_type == 'website':
-            # Website-specific evidence
-            if 'website_check' in search_details:
-                website_result = search_details['website_check']
-                if not website_result.get('accessible'):
-                    evidence.append(f"Website not accessible ({website_result.get('reason', 'unknown reason')})")
-        
-        if evidence:
-            st.write(f"**🚨 Evidence this {ref_type} reference is fake:**")
-            for item in evidence:
-                st.write(f"• {item}")
-        
-        # Show what DOI actually contains if there was a title mismatch (for journals)
-        if ref_type == 'journal':
-            doi_details = search_details.get('doi')
-            if doi_details and 'actual_title' in doi_details:
-                with st.expander("🔍 What the DOI Actually Contains"):
-                    st.write(f"**Actual Title:** {doi_details['actual_title']}")
-                    st.write(f"**Actual Authors:** {', '.join(doi_details.get('actual_authors', []))}")
-                    st.write(f"**Actual Journal:** {doi_details.get('actual_journal', 'N/A')}")
-                    st.write(f"**Actual Year:** {doi_details.get('actual_year', 'N/A')}")
-                    if doi_details.get('doi_url'):
-                        st.markdown(f"**Check DOI:** [{doi_details['doi_url']}]({doi_details['doi_url']})")
-        
-        st.write(f"**⚠️ This {ref_type} reference appears to be fabricated or contains significant errors.**")    def search_books_isbn(self, isbn: str) -> Dict:
-        """Search for books using ISBN via Open Library API"""
-        if not isbn:
-            return {'found': False, 'reason': 'No ISBN provided'}
-        
-        try:
-            # Clean ISBN
-            isbn_clean = re.sub(r'[^\d-]', '', isbn)
-            
-            url = f"https://openlibrary.org/api/books"
-            params = {
-                'bibkeys': f'ISBN:{isbn_clean}',
-                'format': 'json',
-                'jscmd': 'data'
-            }
-            
-            response = self.session.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if data:
+if data:
                 isbn_key = f'ISBN:{isbn_clean}'
                 if isbn_key in data:
                     book_data = data[isbn_key]
@@ -303,6 +151,68 @@ def _show_verification_details(self, result: Dict, ref_type: str):
                 'reason': f'Website check error: {str(e)}'
             }
 
+    def _calculate_title_similarity(self, title1: str, title2: str) -> float:
+        """Calculate similarity between two titles"""
+        words1 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title1.lower()))
+        words2 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title2.lower()))
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union) if union else 0.0
+
+    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str) -> float:
+        """Calculate comprehensive match score"""
+        score = 0.0
+        
+        # Title matching (50% weight)
+        if 'title' in item and item['title'] and target_title:
+            item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
+            title_sim = self._calculate_title_similarity(target_title, item_title)
+            score += title_sim * 0.5
+        
+        # Author matching (25% weight)
+        if 'author' in item and item['author'] and target_authors:
+            item_authors = []
+            for author in item['author']:
+                if 'family' in author:
+                    item_authors.append(author['family'].lower())
+            
+            target_surnames = []
+            for author in re.split(r'[,&]', target_authors):
+                author_clean = re.sub(r'[^\w\s]', '', author).strip()
+                if author_clean:
+                    surname = author_clean.split()[-1].lower()
+                    if len(surname) > 2:
+                        target_surnames.append(surname)
+            
+            if item_authors and target_surnames:
+                common_authors = set(item_authors).intersection(set(target_surnames))
+                author_score = len(common_authors) / max(len(target_surnames), 1)
+                score += author_score * 0.25
+        
+        # Year matching (15% weight)
+        if target_year:
+            item_year = None
+            if 'published-print' in item and 'date-parts' in item['published-print']:
+                item_year = str(item['published-print']['date-parts'][0][0])
+            elif 'published-online' in item and 'date-parts' in item['published-online']:
+                item_year = str(item['published-online']['date-parts'][0][0])
+            
+            if item_year and item_year == target_year:
+                score += 0.15
+        
+        # Journal matching (10% weight)
+        if 'container-title' in item and item['container-title'] and target_journal:
+            item_journal = item['container-title'][0] if isinstance(item['container-title'], list) else str(item['container-title'])
+            journal_sim = self._calculate_title_similarity(target_journal, item_journal)
+            score += journal_sim * 0.1
+        
+        return score
+
     def _calculate_book_match_score(self, book_doc: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str) -> float:
         """Calculate how well a book result matches our reference"""
         score = 0.0
@@ -352,7 +262,689 @@ def _show_verification_details(self, result: Dict, ref_type: str):
                     score += 0.1
                     break
         
-        return scoreimport streamlit as st
+        return score
+
+class ReferenceVerifier:
+    def __init__(self):
+        self.parser = ReferenceParser()
+        self.searcher = DatabaseSearcher()
+
+    def verify_references(self, text: str, format_type: str, progress_callback=None) -> List[Dict]:
+        """Three-level verification: Structure → Content → Existence"""
+        references = self.parser.identify_references(text)
+        results = []
+        
+        total_refs = len(references)
+        
+        for i, ref in enumerate(references):
+            if progress_callback:
+                progress_callback(i + 1, total_refs, f"Verifying reference {i + 1}")
+            
+            result = {
+                'reference': ref.text,
+                'line_number': ref.line_number,
+                'structure_status': 'unknown',
+                'content_status': 'unknown',
+                'existence_status': 'unknown',
+                'overall_status': 'unknown',
+                'structure_check': {},
+                'content_check': {},
+                'existence_check': {},
+                'extracted_elements': {}
+            }
+            
+            # Parse based on format and extract reference type
+            ref_type = self.parser.detect_reference_type(ref.text)
+            
+            if format_type == "APA":
+                parsed = self.parser.parse_apa_reference(ref.text)
+            elif format_type == "Vancouver":
+                parsed = self.parser.parse_vancouver_reference(ref.text)
+            else:
+                parsed = {'format_valid': False, 'errors': ['Unknown format']}
+            
+            result['format_valid'] = parsed['format_valid']
+            result['errors'] = parsed['errors']
+            result['parsed_data'] = parsed
+            result['reference_type'] = ref_type
+            
+            # LEVEL 1: Structure Check (now type-aware)
+            structure_check = self.parser.check_structural_format(ref.text, format_type, ref_type)
+            result['structure_check'] = structure_check
+            
+            if structure_check['structure_valid']:
+                result['structure_status'] = 'valid'
+                
+                # LEVEL 2: Content Extraction (now type-aware)
+                elements = self.parser.extract_reference_elements(ref.text, format_type, ref_type)
+                result['extracted_elements'] = elements
+                
+                if elements['extraction_confidence'] in ['medium', 'high']:
+                    result['content_status'] = 'extracted'
+                    
+                    # LEVEL 3: Existence Verification (now type-specific)
+                    existence_results = self._verify_existence(elements)
+                    result['existence_check'] = existence_results
+                    
+                    if existence_results['any_found']:
+                        result['existence_status'] = 'found'
+                        result['overall_status'] = 'valid'
+                    elif (existence_results['doi_invalid'] or 
+                          existence_results['title_not_found'] or
+                          (ref_type == 'website' and not existence_results['website_accessible'])):
+                        result['existence_status'] = 'not_found'
+                        result['overall_status'] = 'likely_fake'
+                    else:
+                        result['existence_status'] = 'uncertain'
+                        result['overall_status'] = 'content_warning'
+                else:
+                    result['content_status'] = 'extraction_failed'
+                    result['overall_status'] = 'content_error'
+            else:
+                result['structure_status'] = 'invalid'
+                result['overall_status'] = 'structure_error'
+            
+            results.append(result)
+            time.sleep(0.3)  # Rate limiting
+        
+        return results
+
+    def _verify_existence(self, elements: Dict) -> Dict:
+        """Verify if reference elements can be found in databases with enhanced validation for all types"""
+        results = {
+            'any_found': False,
+            'doi_valid': False,
+            'doi_invalid': False,
+            'title_found': False,
+            'title_not_found': False,
+            'comprehensive_found': False,
+            'isbn_found': False,
+            'website_accessible': False,
+            'search_details': {},
+            'verification_sources': []  # Track all sources that validated this reference
+        }
+        
+        ref_type = elements.get('reference_type', 'journal')
+        
+        # Enhanced DOI check with content verification (for journals and some books)
+        if elements.get('doi'):
+            doi_result = self.searcher.check_doi_and_verify_content(
+                elements['doi'], 
+                elements.get('title', '')
+            )
+            results['search_details']['doi'] = doi_result
+            
+            if doi_result['valid']:
+                results['doi_valid'] = True
+                results['any_found'] = True
+                if doi_result.get('doi_url'):
+                    results['verification_sources'].append({
+                        'type': 'DOI',
+                        'url': doi_result['doi_url'],
+                        'description': 'DOI verified with title match'
+                    })
+            else:
+                results['doi_invalid'] = True
+        
+        # Type-specific verification
+        if ref_type == 'journal':
+            # Journal article verification
+            if elements.get('title'):
+                title_result = self.searcher.search_by_exact_title(elements['title'])
+                results['search_details']['title_search'] = title_result
+                
+                if title_result['found']:
+                    results['title_found'] = True
+                    results['any_found'] = True
+                    if title_result.get('source_url'):
+                        results['verification_sources'].append({
+                            'type': 'Journal Title Match',
+                            'url': title_result['source_url'],
+                            'description': f"Exact title match (similarity: {title_result.get('similarity', 0):.1%})"
+                        })
+                else:
+                    results['title_not_found'] = True
+            
+            # Comprehensive journal search
+            comprehensive_result = self.searcher.search_comprehensive(
+                elements.get('authors', ''),
+                elements.get('title', ''),
+                elements.get('year', ''),
+                elements.get('journal', '')
+            )
+            results['search_details']['comprehensive'] = comprehensive_result
+            
+            if comprehensive_result['found']:
+                results['comprehensive_found'] = True
+                results['any_found'] = True
+                if comprehensive_result.get('source_url'):
+                    results['verification_sources'].append({
+                        'type': 'Journal Comprehensive Search',
+                        'url': comprehensive_result['source_url'],
+                        'description': f"Multi-element match (confidence: {comprehensive_result.get('match_score', 0):.1%})"
+                    })
+        
+        elif ref_type == 'book':
+            # Book verification
+            # First try ISBN if available
+            if elements.get('isbn'):
+                isbn_result = self.searcher.search_books_isbn(elements['isbn'])
+                results['search_details']['isbn_search'] = isbn_result
+                
+                if isbn_result['found']:
+                    results['isbn_found'] = True
+                    results['any_found'] = True
+                    if isbn_result.get('source_url'):
+                        results['verification_sources'].append({
+                            'type': 'ISBN Verification',
+                            'url': isbn_result['source_url'],
+                            'description': f"ISBN {isbn_result['isbn']} found in Open Library"
+                        })
+            
+            # Then try comprehensive book search
+            book_result = self.searcher.search_books_comprehensive(
+                elements.get('title', ''),
+                elements.get('authors', ''),
+                elements.get('year', ''),
+                elements.get('publisher', '')
+            )
+            results['search_details']['book_search'] = book_result
+            
+            if book_result['found']:
+                results['comprehensive_found'] = True
+                results['any_found'] = True
+                if book_result.get('source_url'):
+                    results['verification_sources'].append({
+                        'type': 'Book Database Match',
+                        'url': book_result['source_url'],
+                        'description': f"Book match (confidence: {book_result.get('match_score', 0):.1%})"
+                    })
+        
+        elif ref_type == 'website':
+            # Website verification
+            if elements.get('url'):
+                website_result = self.searcher.check_website_accessibility(elements['url'])
+                results['search_details']['website_check'] = website_result
+                
+                if website_result['accessible']:
+                    results['website_accessible'] = True
+                    results['any_found'] = True
+                    results['verification_sources'].append({
+                        'type': 'Website Accessibility',
+                        'url': website_result.get('final_url', elements['url']),
+                        'description': f"Website accessible - {website_result.get('page_title', 'No title')}"
+                    })
+        
+        return results
+
+    def _show_verification_details(self, result: Dict, ref_type: str):
+        """Show type-specific verification details for valid references"""
+        existence = result['existence_check']
+        search_details = existence.get('search_details', {})
+        
+        if ref_type == 'journal':
+            # Show DOI details for journals
+            doi_details = search_details.get('doi')
+            if doi_details and doi_details.get('valid'):
+                with st.expander("📋 DOI Verification Details"):
+                    st.write(f"**Actual Title:** {doi_details.get('actual_title', 'N/A')}")
+                    if doi_details.get('title_similarity'):
+                        st.write(f"**Title Match Confidence:** {doi_details['title_similarity']:.1%}")
+                    st.write(f"**Authors:** {', '.join(doi_details.get('actual_authors', []))}")
+                    st.write(f"**Journal:** {doi_details.get('actual_journal', 'N/A')}")
+                    st.write(f"**Year:** {doi_details.get('actual_year', 'N/A')}")
+                    if doi_details.get('crossref_url'):
+                        st.markdown(f"**Crossref API:** [{doi_details['crossref_url']}]({doi_details['crossref_url']})")
+        
+        elif ref_type == 'book':
+            # Show book verification details
+            isbn_details = search_details.get('isbn_search')
+            book_details = search_details.get('book_search')
+            
+            if isbn_details and isbn_details.get('found'):
+                with st.expander("📚 ISBN Verification Details"):
+                    st.write(f"**Verified Title:** {isbn_details.get('title', 'N/A')}")
+                    st.write(f"**Authors:** {', '.join(isbn_details.get('authors', []))}")
+                    st.write(f"**Publishers:** {', '.join(isbn_details.get('publishers', []))}")
+                    st.write(f"**Publish Date:** {isbn_details.get('publish_date', 'N/A')}")
+                    st.write(f"**ISBN:** {isbn_details.get('isbn', 'N/A')}")
+            
+            if book_details and book_details.get('found'):
+                with st.expander("📖 Book Database Details"):
+                    st.write(f"**Matched Title:** {book_details.get('matched_title', 'N/A')}")
+                    st.write(f"**Authors:** {', '.join(book_details.get('matched_authors', []))}")
+                    st.write(f"**Publisher:** {book_details.get('publisher', 'N/A')}")
+                    st.write(f"**Publish Year:** {book_details.get('publish_year', 'N/A')}")
+                    if book_details.get('match_score'):
+                        st.write(f"**Match Confidence:** {book_details['match_score']:.1%}")
+        
+        elif ref_type == 'website':
+            # Show website verification details
+            website_details = search_details.get('website_check')
+            if website_details and website_details.get('accessible'):
+                with st.expander("🌐 Website Verification Details"):
+                    st.write(f"**Page Title:** {website_details.get('page_title', 'N/A')}")
+                    st.write(f"**Final URL:** {website_details.get('final_url', 'N/A')}")
+                    st.write(f"**Status Code:** {website_details.get('status_code', 'N/A')}")
+                    st.write(f"**Content Type:** {website_details.get('content_type', 'N/A')}")
+
+    def _show_content_warning_details(self, result: Dict, ref_type: str):
+        """Show why content has warnings based on reference type"""
+        existence = result['existence_check']
+        search_details = existence.get('search_details', {})
+        
+        if ref_type == 'journal':
+            if 'comprehensive' in search_details:
+                comp_result = search_details['comprehensive']
+                if 'match_score' in comp_result:
+                    st.write(f"**Match confidence:** {comp_result['match_score']:.1%} (below threshold)")
+        
+        elif ref_type == 'book':
+            book_result = search_details.get('book_search', {})
+            if 'match_score' in book_result:
+                st.write(f"**Book match confidence:** {book_result['match_score']:.1%} (below threshold)")
+            if book_result.get('total_results', 0) > 0:
+                st.write(f"**Search found {book_result['total_results']} potential matches, but none were close enough**")
+
+    def _show_fake_evidence(self, result: Dict, ref_type: str):
+        """Show evidence for fake references based on type"""
+        existence = result['existence_check']
+        evidence = []
+        search_details = existence.get('search_details', {})
+        
+        if ref_type == 'journal':
+            # Enhanced DOI analysis for journals
+            doi_details = search_details.get('doi')
+            if doi_details and not doi_details.get('valid'):
+                reason = doi_details.get('reason', 'Unknown error')
+                if 'Title mismatch' in reason:
+                    evidence.append(f"DOI exists but title doesn't match (Expected: '{doi_details.get('expected_title', 'N/A')}', Actual: '{doi_details.get('actual_title', 'N/A')}')")
+                elif 'does not resolve' in reason:
+                    evidence.append("DOI does not exist or is inaccessible")
+                else:
+                    evidence.append(f"DOI validation failed: {reason}")
+            
+            if existence.get('title_not_found'):
+                evidence.append("Title not found in academic databases")
+            
+            if 'comprehensive' in search_details:
+                comp_result = search_details['comprehensive']
+                if not comp_result.get('found'):
+                    evidence.append(f"No matching journal publications found ({comp_result.get('reason', 'unknown reason')})")
+        
+        elif ref_type == 'book':
+            # Book-specific evidence
+            if 'isbn_search' in search_details:
+                isbn_result = search_details['isbn_search']
+                if not isbn_result.get('found'):
+                    evidence.append(f"ISBN not found in book databases ({isbn_result.get('reason', 'unknown reason')})")
+            
+            if 'book_search' in search_details:
+                book_result = search_details['book_search']
+                if not book_result.get('found'):
+                    evidence.append(f"No matching books found ({book_result.get('reason', 'unknown reason')})")
+        
+        elif ref_type == 'website':
+            # Website-specific evidence
+            if 'website_check' in search_details:
+                website_result = search_details['website_check']
+                if not website_result.get('accessible'):
+                    evidence.append(f"Website not accessible ({website_result.get('reason', 'unknown reason')})")
+        
+        if evidence:
+            st.write(f"**🚨 Evidence this {ref_type} reference is fake:**")
+            for item in evidence:
+                st.write(f"• {item}")
+        
+        # Show what DOI actually contains if there was a title mismatch (for journals)
+        if ref_type == 'journal':
+            doi_details = search_details.get('doi')
+            if doi_details and 'actual_title' in doi_details:
+                with st.expander("🔍 What the DOI Actually Contains"):
+                    st.write(f"**Actual Title:** {doi_details['actual_title']}")
+                    st.write(f"**Actual Authors:** {', '.join(doi_details.get('actual_authors', []))}")
+                    st.write(f"**Actual Journal:** {doi_details.get('actual_journal', 'N/A')}")
+                    st.write(f"**Actual Year:** {doi_details.get('actual_year', 'N/A')}")
+                    if doi_details.get('doi_url'):
+                        st.markdown(f"**Check DOI:** [{doi_details['doi_url']}]({doi_details['doi_url']})")
+        
+        st.write(f"**⚠️ This {ref_type} reference appears to be fabricated or contains significant errors.**")
+
+def main():
+    st.set_page_config(
+        page_title="Academic Reference Verifier",
+        page_icon="📚",
+        layout="wide"
+    )
+    
+    st.title("📚 Academic Reference Verifier")
+    st.markdown("**Three-level verification**: Structure → Content → Existence")
+    st.markdown("Supports **journals** 📄, **books** 📚, and **websites** 🌐")
+    
+    # Sidebar for format selection
+    st.sidebar.header("Settings")
+    format_type = st.sidebar.selectbox(
+        "Select Reference Format",
+        ["APA", "Vancouver"]
+    )
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🔍 Verification Process:**")
+    st.sidebar.markdown("• **Structure**: Layout validation")
+    st.sidebar.markdown("• **Content**: Element extraction")
+    st.sidebar.markdown("• **Existence**: Database verification")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**📋 Supported Types:**")
+    st.sidebar.markdown("📄 **Journals**: DOI, PubMed, Crossref")
+    st.sidebar.markdown("📚 **Books**: ISBN, Open Library")
+    st.sidebar.markdown("🌐 **Websites**: URL accessibility")
+    
+    # Main interface
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.header("📝 Input References")
+        
+        # Instructions
+        st.markdown("""
+        **Instructions:**
+        1. Paste your reference list below (one reference per line)
+        2. Select your citation format (APA or Vancouver)
+        3. Click "Verify References" to check validity
+        
+        **Supported reference types:**
+        - 📄 Journal articles (with DOI verification)
+        - 📚 Books (with ISBN lookup)  
+        - 🌐 Websites (with URL checking)
+        """)
+        
+        # Text area for references
+        reference_text = st.text_area(
+            "Paste your references here (one per line):",
+            height=350,
+            placeholder="""Example references:
+
+📄 Journal (APA):
+Smith, J. A. (2020). Climate change impacts on marine ecosystems. Nature Climate Change, 10(5), 423-431. https://doi.org/10.1038/s41558-020-0789-5
+
+📚 Book (APA):
+Brown, M. (2019). Machine learning in healthcare. MIT Press.
+
+🌐 Website (APA):
+World Health Organization. (2021). COVID-19 pandemic response. Retrieved March 15, 2023, from https://www.who.int/emergencies/diseases/novel-coronavirus-2019
+
+📄 Journal (Vancouver):
+1. Smith JA. Climate change impacts on marine ecosystems. Nature Climate Change. 2020;10(5):423-431.
+
+📚 Book (Vancouver):
+2. Brown M. Machine learning in healthcare. Cambridge: MIT Press; 2019.
+
+🌐 Website (Vancouver):
+3. World Health Organization. COVID-19 pandemic response. Available from: https://www.who.int/emergencies/diseases/novel-coronavirus-2019. Accessed 2023 Mar 15.""",
+            help="Each reference should be on a separate line. The system will automatically detect whether each reference is a journal article, book, or website."
+        )
+        
+        # Control buttons
+        col_a, col_b = st.columns(2)
+        with col_a:
+            verify_button = st.button("🔍 Verify References", type="primary", use_container_width=True)
+        
+        with col_b:
+            if st.button("📝 Load Sample Data", use_container_width=True):
+                sample_data = """Smith, J. A. (2020). Climate change impacts on marine ecosystems. Nature Climate Change, 10(5), 423-431. https://doi.org/10.1038/s41558-020-0789-5
+Brown, M. (2019). Machine learning in healthcare. MIT Press.
+Johnson, R. (2021). COVID-19 pandemic response. Retrieved March 15, 2023, from https://www.who.int/emergencies/diseases/novel-coronavirus-2019
+Buchheit, M., & Mendez-Villanueva, A. (2014). Performance and physiological responses to an agility test in professional soccer players. Journal of Sports Sciences, 32(8), 675-682. https://doi.org/10.1080/02640414.2013.876411
+Fake, A. B. (2023). Non-existent study on imaginary topics. Made Up Press. ISBN: 978-1234567890
+Invalid format reference without proper structure"""
+                st.session_state.sample_text = sample_data
+        
+        # Quick tips
+        with st.expander("💡 Quick Tips"):
+            st.markdown("""
+            **For best results:**
+            - Include DOIs for journal articles when available
+            - Include ISBNs for books when available  
+            - Include complete URLs for websites
+            - Use consistent formatting throughout your list
+            - Remove any extra numbering or bullets (the system will detect Vancouver numbering)
+            
+            **Common issues:**
+            - Missing punctuation (periods, commas)
+            - Inconsistent author name formatting
+            - Missing publication years
+            - Incomplete journal/publisher information
+            """)
+    
+    with col2:
+        st.header("📊 Verification Results")
+        
+        # Use sample data if button was clicked
+        if 'sample_text' in st.session_state:
+            reference_text = st.session_state.sample_text
+            del st.session_state.sample_text
+            verify_button = True
+        
+        if verify_button and reference_text.strip():
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            def update_progress(current, total, message):
+                progress = current / total
+                progress_bar.progress(progress)
+                status_text.text(f"{message} ({current}/{total})")
+            
+            with st.spinner("Initializing three-level verification..."):
+                verifier = ReferenceVerifier()
+                results = verifier.verify_references(reference_text, format_type, update_progress)
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            if results:
+                # Summary statistics
+                total_refs = len(results)
+                valid_refs = sum(1 for r in results if r['overall_status'] == 'valid')
+                structure_errors = sum(1 for r in results if r['overall_status'] == 'structure_error')
+                content_warnings = sum(1 for r in results if r['overall_status'] == 'content_warning')
+                content_errors = sum(1 for r in results if r['overall_status'] == 'content_error')
+                likely_fake = sum(1 for r in results if r['overall_status'] == 'likely_fake')
+                
+                # Count by type
+                type_counts = {}
+                for result in results:
+                    ref_type = result.get('reference_type', 'journal')
+                    type_counts[ref_type] = type_counts.get(ref_type, 0) + 1
+                
+                col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
+                with col_a:
+                    st.metric("Total", total_refs)
+                with col_b:
+                    st.metric("✅ Valid", valid_refs)
+                with col_c:
+                    st.metric("🔧 Structure", structure_errors)
+                with col_d:
+                    st.metric("⚠️ Content", content_warnings + content_errors)
+                with col_e:
+                    st.metric("🚨 Likely Fake", likely_fake)
+                with col_f:
+                    accuracy = round((valid_refs / total_refs * 100) if total_refs > 0 else 0, 1)
+                    st.metric("Accuracy", f"{accuracy}%")
+                
+                # Show reference type breakdown
+                if type_counts:
+                    st.markdown("**Reference Types Detected:**")
+                    type_display = []
+                    type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
+                    for ref_type, count in type_counts.items():
+                        icon = type_icons.get(ref_type, '📄')
+                        type_display.append(f"{icon} {ref_type.title()}: {count}")
+                    st.write(" • ".join(type_display))
+                
+                # Export results option
+                if st.button("📥 Export Verification Report", use_container_width=True):
+                    report = f"# Reference Verification Report\\n\\n"
+                    report += f"**Format:** {format_type}\\n"
+                    report += f"**Total References:** {total_refs}\\n"
+                    report += f"**Valid:** {valid_refs}\\n"
+                    report += f"**Issues:** {total_refs - valid_refs}\\n\\n"
+                    
+                    for result in results:
+                        ref_type = result.get('reference_type', 'journal')
+                        type_icon = {'journal': '📄', 'book': '📚', 'website': '🌐'}.get(ref_type, '📄')
+                        
+                        report += f"## {type_icon} Reference {result['line_number']} ({ref_type.title()})\\n"
+                        report += f"**Status:** {result['overall_status']}\\n"
+                        report += f"**Text:** {result['reference']}\\n\\n"
+                        
+                        if result['overall_status'] == 'valid':
+                            sources = result['existence_check'].get('verification_sources', [])
+                            for source in sources:
+                                report += f"- Verified via {source['type']}: {source['url']}\\n"
+                        
+                        report += "---\\n\\n"
+                    
+                    st.download_button(
+                        label="📄 Download Report",
+                        data=report,
+                        file_name=f"reference_verification_report_{format_type.lower()}.md",
+                        mime="text/markdown"
+                    )
+                
+                st.markdown("---")
+                
+                # Display results with new categorization and type awareness
+                for i, result in enumerate(results):
+                    ref_text = result['reference']
+                    status = result['overall_status']
+                    ref_type = result.get('reference_type', 'journal')
+                    
+                    # Add reference type indicator
+                    type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
+                    type_icon = type_icons.get(ref_type, '📄')
+                    
+                    if status == 'valid':
+                        st.success(f"✅ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Verified and Valid")
+                        st.write(ref_text)
+                        
+                        # Show verification sources with clickable links
+                        existence = result['existence_check']
+                        verification_sources = existence.get('verification_sources', [])
+                        
+                        if verification_sources:
+                            st.write("**✅ Verified via:**")
+                            for source in verification_sources:
+                                source_type = source['type']
+                                source_url = source['url']
+                                description = source['description']
+                                
+                                if source_url:
+                                    st.markdown(f"• **{source_type}**: [{description}]({source_url})")
+                                else:
+                                    st.write(f"• **{source_type}**: {description}")
+                        
+                        # Show type-specific verification details
+                        verifier._show_verification_details(result, ref_type)
+                    
+                    elif status == 'structure_error':
+                        st.error(f"🔧 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Structural Format Issues")
+                        st.write(ref_text)
+                        
+                        issues = result['structure_check'].get('structure_issues', [])
+                        if issues:
+                            st.write(f"**Structural problems for {ref_type}:**")
+                            for issue in issues:
+                                st.write(f"• {issue}")
+                    
+                    elif status == 'content_error':
+                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Content Extraction Issues")
+                        st.write(ref_text)
+                        st.write(f"**Issue:** Could not extract enough elements to verify this {ref_type} reference.")
+                    
+                    elif status == 'content_warning':
+                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Possible Content Issues")
+                        st.write(ref_text)
+                        st.write(f"**Issue:** {ref_type.title()} structure is correct, but some content details may be incorrect.")
+                        
+                        # Show type-specific search results
+                        verifier._show_content_warning_details(result, ref_type)
+                    
+                    elif status == 'likely_fake':
+                        st.error(f"🚨 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Likely Fake Reference")
+                        st.write(ref_text)
+                        
+                        # Show detailed evidence based on type
+                        verifier._show_fake_evidence(result, ref_type)
+                    
+                    if i < len(results) - 1:
+                        st.markdown("---")
+            else:
+                st.warning("No references found. Please check your input format.")
+        
+        elif verify_button:
+            st.warning("Please enter some references to verify.")
+    
+    # Help section
+    with st.expander("ℹ️ How the Three-Level Verification Works"):
+        st.markdown("""
+        **Level 1: Structure Check** 🔧
+        - Verifies basic reference format (APA/Vancouver layout)
+        - Checks for required elements based on type (journal/book/website)
+        - **Lenient** - focuses on structure, not exact formatting details
+        
+        **Level 2: Content Extraction** ⚠️
+        - Extracts key elements (authors, title, year, journal/publisher, DOI/ISBN/URL)
+        - Assesses extraction confidence
+        - Identifies potential content issues
+        
+        **Level 3: Existence Verification** 🚨
+        - **Journals**: DOI validation, PubMed/Crossref searches
+        - **Books**: ISBN lookup via Open Library, comprehensive book search
+        - **Websites**: URL accessibility checking, page title extraction
+        - **Identifies likely fake references across all types**
+        
+        **Result Categories:**
+        - ✅ **Valid**: Passes all levels, reference verified in appropriate databases
+        - 🔧 **Structure Issues**: Layout/format problems need fixing
+        - ⚠️ **Content Issues**: Structure OK, but content may have errors
+        - 🚨 **Likely Fake**: Well-formatted but doesn't exist in any database
+        
+        **Reference Types Supported:**
+        - 📄 **Journal Articles**: Via DOI, PubMed, Crossref
+        - 📚 **Books**: Via ISBN and Open Library database
+        - 🌐 **Websites**: Via URL accessibility checking
+        
+        **Key Improvement:**
+        Now supports all major reference types with specialized validation!
+        """)
+    
+    with st.expander("📊 Understanding Your Results"):
+        st.markdown("""
+        **What each status means:**
+        
+        🔧 **Structure Issues**: Your reference needs formatting fixes
+        - Missing required elements (year, title, journal/publisher)
+        - Incorrect punctuation or layout
+        - **Action**: Fix the format according to your style guide
+        
+        ⚠️ **Content Issues**: Format is correct, but details might be wrong
+        - Author names might be incorrect
+        - Journal/publisher name might be wrong
+        - Volume/issue/page numbers might be off
+        - **Action**: Double-check all details against the original source
+        
+        🚨 **Likely Fake**: Reference appears to be fabricated
+        - Well-formatted but doesn't exist in databases
+        - Invalid DOI/ISBN or title not found anywhere
+        - No matching publications in academic databases
+        - **Action**: Remove or replace with a real reference
+        
+        **Pro Tip**: A reference can look perfectly formatted but still be fake!
+        """)
+
+if __name__ == "__main__":
+    main()import streamlit as st
 import re
 import requests
 import time
@@ -667,6 +1259,8 @@ class ReferenceParser:
         elif extracted_count < len(required_fields):
             elements['extraction_confidence'] = 'medium'
         
+        return elements
+
     def parse_apa_reference(self, ref_text: str) -> Dict:
         """Parse APA format reference with improved accuracy"""
         result = {
@@ -1030,729 +1624,27 @@ class DatabaseSearcher:
         except Exception as e:
             return {'found': False, 'reason': f'Search error: {str(e)}'}
 
-    def _calculate_title_similarity(self, title1: str, title2: str) -> float:
-        """Calculate similarity between two titles"""
-        words1 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title1.lower()))
-        words2 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title2.lower()))
+    def search_books_isbn(self, isbn: str) -> Dict:
+        """Search for books using ISBN via Open Library API"""
+        if not isbn:
+            return {'found': False, 'reason': 'No ISBN provided'}
         
-        if not words1 or not words2:
-            return 0.0
-        
-        intersection = words1.intersection(words2)
-        union = words1.union(words2)
-        
-        return len(intersection) / len(union) if union else 0.0
-
-    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str) -> float:
-        """Calculate comprehensive match score"""
-        score = 0.0
-        
-        # Title matching (50% weight)
-        if 'title' in item and item['title'] and target_title:
-            item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
-            title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.5
-        
-        # Author matching (25% weight)
-        if 'author' in item and item['author'] and target_authors:
-            item_authors = []
-            for author in item['author']:
-                if 'family' in author:
-                    item_authors.append(author['family'].lower())
+        try:
+            # Clean ISBN
+            isbn_clean = re.sub(r'[^\d-]', '', isbn)
             
-            target_surnames = []
-            for author in re.split(r'[,&]', target_authors):
-                author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                if author_clean:
-                    surname = author_clean.split()[-1].lower()
-                    if len(surname) > 2:
-                        target_surnames.append(surname)
-            
-            if item_authors and target_surnames:
-                common_authors = set(item_authors).intersection(set(target_surnames))
-                author_score = len(common_authors) / max(len(target_surnames), 1)
-                score += author_score * 0.25
-        
-        # Year matching (15% weight)
-        if target_year:
-            item_year = None
-            if 'published-print' in item and 'date-parts' in item['published-print']:
-                item_year = str(item['published-print']['date-parts'][0][0])
-            elif 'published-online' in item and 'date-parts' in item['published-online']:
-                item_year = str(item['published-online']['date-parts'][0][0])
-            
-            if item_year and item_year == target_year:
-                score += 0.15
-        
-        # Journal matching (10% weight)
-        if 'container-title' in item and item['container-title'] and target_journal:
-            item_journal = item['container-title'][0] if isinstance(item['container-title'], list) else str(item['container-title'])
-            journal_sim = self._calculate_title_similarity(target_journal, item_journal)
-            score += journal_sim * 0.1
-        
-        return score
-
-class ReferenceVerifier:
-    def __init__(self):
-        self.parser = ReferenceParser()
-        self.searcher = DatabaseSearcher()
-
-    def verify_references(self, text: str, format_type: str, progress_callback=None) -> List[Dict]:
-        """Three-level verification: Structure → Content → Existence"""
-        references = self.parser.identify_references(text)
-        results = []
-        
-        total_refs = len(references)
-        
-        for i, ref in enumerate(references):
-            if progress_callback:
-                progress_callback(i + 1, total_refs, f"Verifying reference {i + 1}")
-            
-            result = {
-                'reference': ref.text,
-                'line_number': ref.line_number,
-                'structure_status': 'unknown',
-                'content_status': 'unknown',
-                'existence_status': 'unknown',
-                'overall_status': 'unknown',
-                'structure_check': {},
-                'content_check': {},
-                'existence_check': {},
-                'extracted_elements': {}
+            url = f"https://openlibrary.org/api/books"
+            params = {
+                'bibkeys': f'ISBN:{isbn_clean}',
+                'format': 'json',
+                'jscmd': 'data'
             }
             
-            # LEVEL 1: Structure Check
-            structure_check = self.parser.check_structural_format(ref.text, format_type)
-            result['structure_check'] = structure_check
+            response = self.session.get(url, params=params, timeout=15)
+            response.raise_for_status()
             
-            if structure_check['structure_valid']:
-                result['structure_status'] = 'valid'
-                
-                # LEVEL 2: Content Extraction
-                elements = self.parser.extract_reference_elements(ref.text, format_type)
-                result['extracted_elements'] = elements
-                
-                if elements['extraction_confidence'] in ['medium', 'high']:
-                    result['content_status'] = 'extracted'
-                    
-                    # LEVEL 3: Existence Verification
-                    existence_results = self._verify_existence(elements)
-                    result['existence_check'] = existence_results
-                    
-                    if existence_results['any_found']:
-                        result['existence_status'] = 'found'
-                        result['overall_status'] = 'valid'
-                    elif existence_results['doi_invalid'] or existence_results['title_not_found']:
-                        result['existence_status'] = 'not_found'
-                        result['overall_status'] = 'likely_fake'
-                    else:
-                        result['existence_status'] = 'uncertain'
-                        result['overall_status'] = 'content_warning'
-                else:
-                    result['content_status'] = 'extraction_failed'
-                    result['overall_status'] = 'content_error'
-            else:
-                result['structure_status'] = 'invalid'
-                result['overall_status'] = 'structure_error'
+            data = response.json()
             
-            results.append(result)
-            time.sleep(0.3)  # Rate limiting
-        
-        return results
-
-    def _show_verification_details(self, result: Dict, ref_type: str):
-        """Show type-specific verification details for valid references"""
-        existence = result['existence_check']
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            # Show DOI details for journals
-            doi_details = search_details.get('doi')
-            if doi_details and doi_details.get('valid'):
-                with st.expander("📋 DOI Verification Details"):
-                    st.write(f"**Actual Title:** {doi_details.get('actual_title', 'N/A')}")
-                    if doi_details.get('title_similarity'):
-                        st.write(f"**Title Match Confidence:** {doi_details['title_similarity']:.1%}")
-                    st.write(f"**Authors:** {', '.join(doi_details.get('actual_authors', []))}")
-                    st.write(f"**Journal:** {doi_details.get('actual_journal', 'N/A')}")
-                    st.write(f"**Year:** {doi_details.get('actual_year', 'N/A')}")
-                    if doi_details.get('crossref_url'):
-                        st.markdown(f"**Crossref API:** [{doi_details['crossref_url']}]({doi_details['crossref_url']})")
-        
-        elif ref_type == 'book':
-            # Show book verification details
-            isbn_details = search_details.get('isbn_search')
-            book_details = search_details.get('book_search')
-            
-            if isbn_details and isbn_details.get('found'):
-                with st.expander("📚 ISBN Verification Details"):
-                    st.write(f"**Verified Title:** {isbn_details.get('title', 'N/A')}")
-                    st.write(f"**Authors:** {', '.join(isbn_details.get('authors', []))}")
-                    st.write(f"**Publishers:** {', '.join(isbn_details.get('publishers', []))}")
-                    st.write(f"**Publish Date:** {isbn_details.get('publish_date', 'N/A')}")
-                    st.write(f"**ISBN:** {isbn_details.get('isbn', 'N/A')}")
-            
-            if book_details and book_details.get('found'):
-                with st.expander("📖 Book Database Details"):
-                    st.write(f"**Matched Title:** {book_details.get('matched_title', 'N/A')}")
-                    st.write(f"**Authors:** {', '.join(book_details.get('matched_authors', []))}")
-                    st.write(f"**Publisher:** {book_details.get('publisher', 'N/A')}")
-                    st.write(f"**Publish Year:** {book_details.get('publish_year', 'N/A')}")
-                    if book_details.get('match_score'):
-                        st.write(f"**Match Confidence:** {book_details['match_score']:.1%}")
-        
-        elif ref_type == 'website':
-            # Show website verification details
-            website_details = search_details.get('website_check')
-            if website_details and website_details.get('accessible'):
-                with st.expander("🌐 Website Verification Details"):
-                    st.write(f"**Page Title:** {website_details.get('page_title', 'N/A')}")
-                    st.write(f"**Final URL:** {website_details.get('final_url', 'N/A')}")
-                    st.write(f"**Status Code:** {website_details.get('status_code', 'N/A')}")
-                    st.write(f"**Content Type:** {website_details.get('content_type', 'N/A')}")
-
-    def _show_content_warning_details(self, result: Dict, ref_type: str):
-        """Show why content has warnings based on reference type"""
-        existence = result['existence_check']
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            if 'comprehensive' in search_details:
-                comp_result = search_details['comprehensive']
-                if 'match_score' in comp_result:
-                    st.write(f"**Match confidence:** {comp_result['match_score']:.1%} (below threshold)")
-        
-        elif ref_type == 'book':
-            book_result = search_details.get('book_search', {})
-            if 'match_score' in book_result:
-                st.write(f"**Book match confidence:** {book_result['match_score']:.1%} (below threshold)")
-            if book_result.get('total_results', 0) > 0:
-                st.write(f"**Search found {book_result['total_results']} potential matches, but none were close enough**")
-
-    def _show_fake_evidence(self, result: Dict, ref_type: str):
-        """Show evidence for fake references based on type"""
-        existence = result['existence_check']
-        evidence = []
-        search_details = existence.get('search_details', {})
-        
-        if ref_type == 'journal':
-            # Enhanced DOI analysis for journals
-            doi_details = search_details.get('doi')
-            if doi_details and not doi_details.get('valid'):
-                reason = doi_details.get('reason', 'Unknown error')
-                if 'Title mismatch' in reason:
-                    evidence.append(f"DOI exists but title doesn't match (Expected: '{doi_details.get('expected_title', 'N/A')}', Actual: '{doi_details.get('actual_title', 'N/A')}')")
-                elif 'does not resolve' in reason:
-                    evidence.append("DOI does not exist or is inaccessible")
-                else:
-                    evidence.append(f"DOI validation failed: {reason}")
-            
-            if existence.get('title_not_found'):
-                evidence.append("Title not found in academic databases")
-            
-            if 'comprehensive' in search_details:
-                comp_result = search_details['comprehensive']
-                if not comp_result.get('found'):
-                    evidence.append(f"No matching journal publications found ({comp_result.get('reason', 'unknown reason')})")
-        
-        elif ref_type == 'book':
-            # Book-specific evidence
-            if 'isbn_search' in search_details:
-                isbn_result = search_details['isbn_search']
-                if not isbn_result.get('found'):
-                    evidence.append(f"ISBN not found in book databases ({isbn_result.get('reason', 'unknown reason')})")
-            
-            if 'book_search' in search_details:
-                book_result = search_details['book_search']
-                if not book_result.get('found'):
-                    evidence.append(f"No matching books found ({book_result.get('reason', 'unknown reason')})")
-        
-        elif ref_type == 'website':
-            # Website-specific evidence
-            if 'website_check' in search_details:
-                website_result = search_details['website_check']
-                if not website_result.get('accessible'):
-                    evidence.append(f"Website not accessible ({website_result.get('reason', 'unknown reason')})")
-        
-        if evidence:
-            st.write(f"**🚨 Evidence this {ref_type} reference is fake:**")
-            for item in evidence:
-                st.write(f"• {item}")
-        
-        # Show what DOI actually contains if there was a title mismatch (for journals)
-        if ref_type == 'journal':
-            doi_details = search_details.get('doi')
-            if doi_details and 'actual_title' in doi_details:
-                with st.expander("🔍 What the DOI Actually Contains"):
-                    st.write(f"**Actual Title:** {doi_details['actual_title']}")
-                    st.write(f"**Actual Authors:** {', '.join(doi_details.get('actual_authors', []))}")
-                    st.write(f"**Actual Journal:** {doi_details.get('actual_journal', 'N/A')}")
-                    st.write(f"**Actual Year:** {doi_details.get('actual_year', 'N/A')}")
-                    if doi_details.get('doi_url'):
-                        st.markdown(f"**Check DOI:** [{doi_details['doi_url']}]({doi_details['doi_url']})")
-        
-        st.write(f"**⚠️ This {ref_type} reference appears to be fabricated or contains significant errors.**")
-
-    def _verify_existence(self, elements: Dict) -> Dict:
-        """Verify if reference elements can be found in databases with enhanced validation for all types"""
-        results = {
-            'any_found': False,
-            'doi_valid': False,
-            'doi_invalid': False,
-            'title_found': False,
-            'title_not_found': False,
-            'comprehensive_found': False,
-            'isbn_found': False,
-            'website_accessible': False,
-            'search_details': {},
-            'verification_sources': []  # Track all sources that validated this reference
-        }
-        
-        ref_type = elements.get('reference_type', 'journal')
-        
-        # Enhanced DOI check with content verification (for journals and some books)
-        if elements.get('doi'):
-            doi_result = self.searcher.check_doi_and_verify_content(
-                elements['doi'], 
-                elements.get('title', '')
-            )
-            results['search_details']['doi'] = doi_result
-            
-            if doi_result['valid']:
-                results['doi_valid'] = True
-                results['any_found'] = True
-                if doi_result.get('doi_url'):
-                    results['verification_sources'].append({
-                        'type': 'DOI',
-                        'url': doi_result['doi_url'],
-                        'description': 'DOI verified with title match'
-                    })
-            else:
-                results['doi_invalid'] = True
-        
-        # Type-specific verification
-        if ref_type == 'journal':
-            # Journal article verification
-            if elements.get('title'):
-                title_result = self.searcher.search_by_exact_title(elements['title'])
-                results['search_details']['title_search'] = title_result
-                
-                if title_result['found']:
-                    results['title_found'] = True
-                    results['any_found'] = True
-                    if title_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'Journal Title Match',
-                            'url': title_result['source_url'],
-                            'description': f"Exact title match (similarity: {title_result.get('similarity', 0):.1%})"
-                        })
-                else:
-                    results['title_not_found'] = True
-            
-            # Comprehensive journal search
-            comprehensive_result = self.searcher.search_comprehensive(
-                elements.get('authors', ''),
-                elements.get('title', ''),
-                elements.get('year', ''),
-                elements.get('journal', '')
-            )
-            results['search_details']['comprehensive'] = comprehensive_result
-            
-            if comprehensive_result['found']:
-                results['comprehensive_found'] = True
-                results['any_found'] = True
-                if comprehensive_result.get('source_url'):
-                    results['verification_sources'].append({
-                        'type': 'Journal Comprehensive Search',
-                        'url': comprehensive_result['source_url'],
-                        'description': f"Multi-element match (confidence: {comprehensive_result.get('match_score', 0):.1%})"
-                    })
-        
-        elif ref_type == 'book':
-            # Book verification
-            # First try ISBN if available
-            if elements.get('isbn'):
-                isbn_result = self.searcher.search_books_isbn(elements['isbn'])
-                results['search_details']['isbn_search'] = isbn_result
-                
-                if isbn_result['found']:
-                    results['isbn_found'] = True
-                    results['any_found'] = True
-                    if isbn_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'ISBN Verification',
-                            'url': isbn_result['source_url'],
-                            'description': f"ISBN {isbn_result['isbn']} found in Open Library"
-                        })
-            
-            # Then try comprehensive book search
-            book_result = self.searcher.search_books_comprehensive(
-                elements.get('title', ''),
-                elements.get('authors', ''),
-                elements.get('year', ''),
-                elements.get('publisher', '')
-            )
-            results['search_details']['book_search'] = book_result
-            
-            if book_result['found']:
-                results['comprehensive_found'] = True
-                results['any_found'] = True
-                if book_result.get('source_url'):
-                    results['verification_sources'].append({
-                        'type': 'Book Database Match',
-                        'url': book_result['source_url'],
-                        'description': f"Book match (confidence: {book_result.get('match_score', 0):.1%})"
-                    })
-        
-        elif ref_type == 'website':
-            # Website verification
-            if elements.get('url'):
-                website_result = self.searcher.check_website_accessibility(elements['url'])
-                results['search_details']['website_check'] = website_result
-                
-                if website_result['accessible']:
-                    results['website_accessible'] = True
-                    results['any_found'] = True
-                    results['verification_sources'].append({
-                        'type': 'Website Accessibility',
-                        'url': website_result.get('final_url', elements['url']),
-                        'description': f"Website accessible - {website_result.get('page_title', 'No title')}"
-                    })
-        
-        return results
-
-def main():
-    st.set_page_config(
-        page_title="Academic Reference Verifier",
-        page_icon="📚",
-        layout="wide"
-    )
-    
-    st.title("📚 Academic Reference Verifier")
-    st.markdown("**Three-level verification**: Structure → Content → Existence")
-    st.markdown("Supports **journals** 📄, **books** 📚, and **websites** 🌐")
-    
-    # Sidebar for format selection
-    st.sidebar.header("Settings")
-    format_type = st.sidebar.selectbox(
-        "Select Reference Format",
-        ["APA", "Vancouver"]
-    )
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**🔍 Verification Process:**")
-    st.sidebar.markdown("• **Structure**: Layout validation")
-    st.sidebar.markdown("• **Content**: Element extraction")
-    st.sidebar.markdown("• **Existence**: Database verification")
-    
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("**📋 Supported Types:**")
-    st.sidebar.markdown("📄 **Journals**: DOI, PubMed, Crossref")
-    st.sidebar.markdown("📚 **Books**: ISBN, Open Library")
-    st.sidebar.markdown("🌐 **Websites**: URL accessibility")
-    
-    # Main interface
-    col1, col2 = st.columns([1, 1])
-    
-    with col1:
-        st.header("📝 Input References")
-        
-        # Instructions
-        st.markdown("""
-        **Instructions:**
-        1. Paste your reference list below (one reference per line)
-        2. Select your citation format (APA or Vancouver)
-        3. Click "Verify References" to check validity
-        
-        **Supported reference types:**
-        - 📄 Journal articles (with DOI verification)
-        - 📚 Books (with ISBN lookup)  
-        - 🌐 Websites (with URL checking)
-        """)
-        
-        # Text area for references
-        reference_text = st.text_area(
-            "Paste your references here (one per line):",
-            height=350,
-            placeholder="""Example references:
-
-📄 Journal (APA):
-Smith, J. A. (2020). Climate change impacts on marine ecosystems. Nature Climate Change, 10(5), 423-431. https://doi.org/10.1038/s41558-020-0789-5
-
-📚 Book (APA):
-Brown, M. (2019). Machine learning in healthcare. MIT Press.
-
-🌐 Website (APA):
-World Health Organization. (2021). COVID-19 pandemic response. Retrieved March 15, 2023, from https://www.who.int/emergencies/diseases/novel-coronavirus-2019
-
-📄 Journal (Vancouver):
-1. Smith JA. Climate change impacts on marine ecosystems. Nature Climate Change. 2020;10(5):423-431.
-
-📚 Book (Vancouver):
-2. Brown M. Machine learning in healthcare. Cambridge: MIT Press; 2019.
-
-🌐 Website (Vancouver):
-3. World Health Organization. COVID-19 pandemic response. Available from: https://www.who.int/emergencies/diseases/novel-coronavirus-2019. Accessed 2023 Mar 15.""",
-            help="Each reference should be on a separate line. The system will automatically detect whether each reference is a journal article, book, or website."
-        )
-        
-        # Control buttons
-        col_a, col_b = st.columns(2)
-        with col_a:
-            verify_button = st.button("🔍 Verify References", type="primary", use_container_width=True)
-        
-        with col_b:
-            if st.button("📝 Load Sample Data", use_container_width=True):
-                sample_data = """Smith, J. A. (2020). Climate change impacts on marine ecosystems. Nature Climate Change, 10(5), 423-431. https://doi.org/10.1038/s41558-020-0789-5
-Brown, M. (2019). Machine learning in healthcare. MIT Press.
-Johnson, R. (2021). COVID-19 pandemic response. Retrieved March 15, 2023, from https://www.who.int/emergencies/diseases/novel-coronavirus-2019
-Buchheit, M., & Mendez-Villanueva, A. (2014). Performance and physiological responses to an agility test in professional soccer players. Journal of Sports Sciences, 32(8), 675-682. https://doi.org/10.1080/02640414.2013.876411
-Fake, A. B. (2023). Non-existent study on imaginary topics. Made Up Press. ISBN: 978-1234567890
-Invalid format reference without proper structure"""
-                st.session_state.sample_text = sample_data
-        
-        # Quick tips
-        with st.expander("💡 Quick Tips"):
-            st.markdown("""
-            **For best results:**
-            - Include DOIs for journal articles when available
-            - Include ISBNs for books when available  
-            - Include complete URLs for websites
-            - Use consistent formatting throughout your list
-            - Remove any extra numbering or bullets (the system will detect Vancouver numbering)
-            
-            **Common issues:**
-            - Missing punctuation (periods, commas)
-            - Inconsistent author name formatting
-            - Missing publication years
-            - Incomplete journal/publisher information
-            """)
-    
-    with col2:
-        st.header("📊 Verification Results")
-        
-        # Use sample data if button was clicked
-        if 'sample_text' in st.session_state:
-            reference_text = st.session_state.sample_text
-            del st.session_state.sample_text
-            verify_button = True
-        
-        if verify_button and reference_text.strip():
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            def update_progress(current, total, message):
-                progress = current / total
-                progress_bar.progress(progress)
-                status_text.text(f"{message} ({current}/{total})")
-            
-            with st.spinner("Initializing three-level verification..."):
-                verifier = ReferenceVerifier()
-                results = verifier.verify_references(reference_text, format_type, update_progress)
-            
-            progress_bar.empty()
-            status_text.empty()
-            
-            if results:
-                # Summary statistics
-                total_refs = len(results)
-                valid_refs = sum(1 for r in results if r['overall_status'] == 'valid')
-                structure_errors = sum(1 for r in results if r['overall_status'] == 'structure_error')
-                content_warnings = sum(1 for r in results if r['overall_status'] == 'content_warning')
-                content_errors = sum(1 for r in results if r['overall_status'] == 'content_error')
-                likely_fake = sum(1 for r in results if r['overall_status'] == 'likely_fake')
-                
-                # Count by type
-                type_counts = {}
-                for result in results:
-                    ref_type = result.get('reference_type', 'journal')
-                    type_counts[ref_type] = type_counts.get(ref_type, 0) + 1
-                
-                col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
-                with col_a:
-                    st.metric("Total", total_refs)
-                with col_b:
-                    st.metric("✅ Valid", valid_refs)
-                with col_c:
-                    st.metric("🔧 Structure", structure_errors)
-                with col_d:
-                    st.metric("⚠️ Content", content_warnings + content_errors)
-                with col_e:
-                    st.metric("🚨 Likely Fake", likely_fake)
-                with col_f:
-                    accuracy = round((valid_refs / total_refs * 100) if total_refs > 0 else 0, 1)
-                    st.metric("Accuracy", f"{accuracy}%")
-                
-                # Show reference type breakdown
-                if type_counts:
-                    st.markdown("**Reference Types Detected:**")
-                    type_display = []
-                    type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
-                    for ref_type, count in type_counts.items():
-                        icon = type_icons.get(ref_type, '📄')
-                        type_display.append(f"{icon} {ref_type.title()}: {count}")
-                    st.write(" • ".join(type_display))
-                
-                # Export results option
-                if st.button("📥 Export Verification Report", use_container_width=True):
-                    report = f"# Reference Verification Report\\n\\n"
-                    report += f"**Format:** {format_type}\\n"
-                    report += f"**Total References:** {total_refs}\\n"
-                    report += f"**Valid:** {valid_refs}\\n"
-                    report += f"**Issues:** {total_refs - valid_refs}\\n\\n"
-                    
-                    for result in results:
-                        ref_type = result.get('reference_type', 'journal')
-                        type_icon = {'journal': '📄', 'book': '📚', 'website': '🌐'}.get(ref_type, '📄')
-                        
-                        report += f"## {type_icon} Reference {result['line_number']} ({ref_type.title()})\\n"
-                        report += f"**Status:** {result['overall_status']}\\n"
-                        report += f"**Text:** {result['reference']}\\n\\n"
-                        
-                        if result['overall_status'] == 'valid':
-                            sources = result['existence_check'].get('verification_sources', [])
-                            for source in sources:
-                                report += f"- Verified via {source['type']}: {source['url']}\\n"
-                        
-                        report += "---\\n\\n"
-                    
-                    st.download_button(
-                        label="📄 Download Report",
-                        data=report,
-                        file_name=f"reference_verification_report_{format_type.lower()}.md",
-                        mime="text/markdown"
-                    )
-                
-                st.markdown("---")
-                
-                # Display results with new categorization and type awareness
-                for i, result in enumerate(results):
-                    ref_text = result['reference']
-                    status = result['overall_status']
-                    ref_type = result.get('reference_type', 'journal')
-                    
-                    # Add reference type indicator
-                    type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
-                    type_icon = type_icons.get(ref_type, '📄')
-                    
-                    if status == 'valid':
-                        st.success(f"✅ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Verified and Valid")
-                        st.write(ref_text)
-                        
-                        # Show verification sources with clickable links
-                        existence = result['existence_check']
-                        verification_sources = existence.get('verification_sources', [])
-                        
-                        if verification_sources:
-                            st.write("**✅ Verified via:**")
-                            for source in verification_sources:
-                                source_type = source['type']
-                                source_url = source['url']
-                                description = source['description']
-                                
-                                if source_url:
-                                    st.markdown(f"• **{source_type}**: [{description}]({source_url})")
-                                else:
-                                    st.write(f"• **{source_type}**: {description}")
-                        
-                        # Show type-specific verification details
-                        verifier._show_verification_details(result, ref_type)
-                    
-                    elif status == 'structure_error':
-                        st.error(f"🔧 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Structural Format Issues")
-                        st.write(ref_text)
-                        
-                        issues = result['structure_check'].get('structure_issues', [])
-                        if issues:
-                            st.write(f"**Structural problems for {ref_type}:**")
-                            for issue in issues:
-                                st.write(f"• {issue}")
-                    
-                    elif status == 'content_error':
-                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Content Extraction Issues")
-                        st.write(ref_text)
-                        st.write(f"**Issue:** Could not extract enough elements to verify this {ref_type} reference.")
-                    
-                    elif status == 'content_warning':
-                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Possible Content Issues")
-                        st.write(ref_text)
-                        st.write(f"**Issue:** {ref_type.title()} structure is correct, but some content details may be incorrect.")
-                        
-                        # Show type-specific search results
-                        verifier._show_content_warning_details(result, ref_type)
-                    
-                    elif status == 'likely_fake':
-                        st.error(f"🚨 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Likely Fake Reference")
-                        st.write(ref_text)
-                        
-                        # Show detailed evidence based on type
-                        verifier._show_fake_evidence(result, ref_type)
-                    
-                    if i < len(results) - 1:
-                        st.markdown("---")
-            else:
-                st.warning("No references found. Please check your input format.")
-        
-        elif verify_button:
-            st.warning("Please enter some references to verify.")
-    
-    # Help section
-    with st.expander("ℹ️ How the Three-Level Verification Works"):
-        st.markdown("""
-        **Level 1: Structure Check** 🔧
-        - Verifies basic reference format (APA/Vancouver layout)
-        - Checks for required elements (year, title, journal, etc.)
-        - **Lenient** - focuses on structure, not exact formatting details
-        
-        **Level 2: Content Extraction** ⚠️
-        - Extracts key elements (authors, title, year, journal, DOI)
-        - Assesses extraction confidence
-        - Identifies potential content issues
-        
-        **Level 3: Existence Verification** 🚨
-        - **Journals**: DOI validation, PubMed/Crossref searches
-        - **Books**: ISBN lookup via Open Library, comprehensive book search
-        - **Websites**: URL accessibility checking, page title extraction
-        - **Identifies likely fake references across all types**
-        
-        **Result Categories:**
-        - ✅ **Valid**: Passes all levels, reference verified in appropriate databases
-        - 🔧 **Structure Issues**: Layout/format problems need fixing
-        - ⚠️ **Content Issues**: Structure OK, but content may have errors
-        - 🚨 **Likely Fake**: Well-formatted but doesn't exist in any database
-        
-        **Reference Types Supported:**
-        - 📄 **Journal Articles**: Via DOI, PubMed, Crossref
-        - 📚 **Books**: Via ISBN and Open Library database
-        - 🌐 **Websites**: Via URL accessibility checking
-        
-        **Key Improvement:**
-        Now supports all major reference types with specialized validation!
-        """)
-    
-    with st.expander("📊 Understanding Your Results"):
-        st.markdown("""
-        **What each status means:**
-        
-        🔧 **Structure Issues**: Your reference needs formatting fixes
-        - Missing required elements (year, title, journal)
-        - Incorrect punctuation or layout
-        - **Action**: Fix the format according to your style guide
-        
-        ⚠️ **Content Issues**: Format is correct, but details might be wrong
-        - Author names might be incorrect
-        - Journal name might be wrong
-        - Volume/issue numbers might be off
-        - **Action**: Double-check all details against the original source
-        
-        🚨 **Likely Fake**: Reference appears to be fabricated
-        - Well-formatted but doesn't exist in databases
-        - Invalid DOI or title not found anywhere
-        - No matching publications in academic databases
-        - **Action**: Remove or replace with a real reference
-        
-        **Pro Tip**: A reference can look perfectly formatted but still be fake!
-        """)
-
-if __name__ == "__main__":
-    main()
+            if data:
+                isbn_key = f'ISBN:{isbn_clean}'
+                if isbn_key in data:
