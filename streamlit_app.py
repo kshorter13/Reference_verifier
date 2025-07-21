@@ -528,7 +528,7 @@ class DatabaseSearcher:
                         query_parts.extend([part for part in name_parts if len(part) > 2])
             
             if not query_parts:
-                return {'found': False, 'reason': 'Insufficient search terms for book search'}
+                return {'found': False, 'reason': 'Insufficient search terms for Open Library book search'}
             
             url = "https://openlibrary.org/search.json"
             params = {
@@ -551,7 +551,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = doc
                 
-                if best_score > 0.5: # Set a reasonable threshold for book matches
+                if best_score > 0.5: # Set a reasonable threshold for Open Library book matches
                     return {
                         'found': True,
                         'match_score': best_score,
@@ -562,10 +562,79 @@ class DatabaseSearcher:
                         'total_results': len(data['docs'])
                     }
             
-            return {'found': False, 'reason': f'No good book search results (best score: {best_score:.2f})'}
+            return {'found': False, 'reason': f'No good Open Library search results (best score: {best_score:.2f})'}
             
         except Exception as e:
-            return {'found': False, 'reason': f'Book search error: {str(e)}'}
+            return {'found': False, 'reason': f'Open Library book search error: {str(e)}'}
+
+    def search_books_google_books(self, title: str, authors: str, year: str, publisher: str) -> Dict:
+        try:
+            query_parts = []
+            if title:
+                query_parts.append(f"intitle:{title}")
+            if authors:
+                # Google Books API supports inauthor
+                author_surnames = [re.sub(r'[^\w\s]', '', a).strip().split()[-1] for a in re.split(r'[,&]', authors) if re.sub(r'[^\w\s]', '', a).strip()]
+                if author_surnames:
+                    query_parts.append(f"inauthor:{' '.join(author_surnames)}")
+            if publisher:
+                query_parts.append(f"inpublisher:{publisher}")
+            if year:
+                # Google Books API 'inpublicdate' is for year, or year range
+                query_parts.append(f"inpublicdate:{year}")
+
+            if not query_parts:
+                return {'found': False, 'reason': 'Insufficient search terms for Google Books search'}
+
+            q = ' '.join(query_parts)
+            url = "https://www.googleapis.com/books/v1/volumes"
+            params = {
+                'q': q,
+                'maxResults': 10 # Fetch more results to find the best match
+            }
+
+            response = self.session.get(url, params=params, timeout=15)
+            response.raise_for_status()
+
+            data = response.json()
+
+            if 'items' in data:
+                best_match = None
+                best_score = 0.0
+
+                for item in data['items']:
+                    volume_info = item.get('volumeInfo', {})
+                    
+                    item_title = volume_info.get('title', '')
+                    item_authors = volume_info.get('authors', [])
+                    item_published_date = volume_info.get('publishedDate', '')
+                    item_publisher = volume_info.get('publisher', '')
+
+                    score = self._calculate_google_book_match_score(
+                        item_title, item_authors, item_published_date, item_publisher,
+                        target_title, authors, year, publisher
+                    )
+
+                    if score > best_score:
+                        best_score = score
+                        best_match = item
+
+                if best_score > 0.6: # Set a reasonable threshold for Google Books matches
+                    return {
+                        'found': True,
+                        'match_score': best_score,
+                        'matched_title': best_match.get('volumeInfo', {}).get('title', 'Unknown'),
+                        'matched_authors': best_match.get('volumeInfo', {}).get('authors', ['Unknown']),
+                        'matched_year': best_match.get('volumeInfo', {}).get('publishedDate', '')[:4],
+                        'source_url': best_match.get('volumeInfo', {}).get('infoLink'),
+                        'total_results': data.get('totalItems', 0)
+                    }
+            
+            return {'found': False, 'reason': f'No good Google Books search results (best score: {best_score:.2f})'}
+
+        except Exception as e:
+            return {'found': False, 'reason': f'Google Books search error: {str(e)}'}
+
 
     def check_website_accessibility(self, url: str) -> Dict:
         if not url:
@@ -736,6 +805,56 @@ class DatabaseSearcher:
         
         return score
 
+    def _calculate_google_book_match_score(self, item_title: str, item_authors: List[str], item_published_date: str, item_publisher: str,
+                                          target_title: str, target_authors: str, target_year: str, target_publisher: str) -> float:
+        score = 0.0
+
+        # Title matching (50% weight)
+        title_sim = 0.0
+        if item_title and target_title:
+            title_sim = self._calculate_title_similarity(target_title, item_title)
+            score += title_sim * 0.5
+
+        # Author matching (30% weight)
+        author_score = 0.0
+        if item_authors and target_authors:
+            item_authors_lower = [a.lower() for a in item_authors]
+            target_surnames = []
+            for author in re.split(r'and|&|,', target_authors):
+                author_clean = re.sub(r'[^\w\s]', '', author).strip()
+                if author_clean:
+                    name_parts = author_clean.split()
+                    if name_parts:
+                        surname = name_parts[-1].lower()
+                        if len(surname) > 2:
+                            target_surnames.append(surname)
+            
+            if item_authors_lower and target_surnames:
+                author_match_count = sum(1 for ts in target_surnames if any(ts in ia for ia in item_authors_lower))
+                author_score = author_match_count / max(len(target_surnames), len(item_authors_lower), 1)
+                score += author_score * 0.3
+
+        # Year matching (15% weight)
+        year_match_score = 0.0
+        if target_year and item_published_date:
+            item_year = item_published_date[:4] # Take first 4 chars for year
+            if item_year == target_year:
+                year_match_score = 0.15
+            elif abs(int(item_year) - int(target_year)) <= 1:
+                year_match_score = 0.075
+            score += year_match_score
+
+        # Publisher matching (5% weight)
+        publisher_match_score = 0.0
+        if target_publisher and item_publisher:
+            if target_publisher.lower() in item_publisher.lower() or \
+               self._calculate_title_similarity(target_publisher, item_publisher) > 0.7:
+                publisher_match_score = 0.05
+            score += publisher_match_score
+        
+        return score
+
+
 class ReferenceVerifier:
     def __init__(self):
         self.parser = ReferenceParser()
@@ -813,7 +932,8 @@ class ReferenceVerifier:
             'title_found': False, # For journals, via exact title
             'comprehensive_journal_found': False, # Renamed for clarity
             'isbn_found': False,
-            'comprehensive_book_found': False, # New field for clarity
+            'comprehensive_book_found_openlibrary': False, # Renamed for clarity
+            'comprehensive_book_found_googlebooks': False, # New field for Google Books
             'website_accessible': False,
             'search_details': {},
             'verification_sources': []
@@ -878,24 +998,45 @@ class ReferenceVerifier:
         
         # Only run comprehensive book search if ISBN didn't validate or wasn't present
         elif ref_type == 'book' and not results['isbn_found']:
-            book_result = self.searcher.search_books_comprehensive(
+            # Try Open Library first
+            book_result_ol = self.searcher.search_books_comprehensive(
                 elements.get('title', ''),
                 elements.get('authors', ''),
                 elements.get('year', ''),
                 elements.get('publisher', '')
             )
-            results['search_details']['comprehensive_book'] = book_result
+            results['search_details']['comprehensive_book_openlibrary'] = book_result_ol
             
-            if book_result['found']:
-                results['comprehensive_book_found'] = True
+            if book_result_ol['found']:
+                results['comprehensive_book_found_openlibrary'] = True
                 results['any_found'] = True
-                if book_result.get('source_url'):
+                if book_result_ol.get('source_url'):
                     results['verification_sources'].append({
                         'type': 'Book Comprehensive Search (Open Library)',
-                        'url': book_result['source_url'],
-                        'description': f"Book match (confidence: {book_result.get('match_score', 0):.1%})"
+                        'url': book_result_ol['source_url'],
+                        'description': f"Book match (confidence: {book_result_ol.get('match_score', 0):.1%})"
                     })
-        
+            
+            # If Open Library didn't find a strong match, try Google Books
+            if not results['any_found'] and (elements.get('title') or elements.get('authors')): # Only search if we have title/author
+                book_result_gb = self.searcher.search_books_google_books(
+                    elements.get('title', ''),
+                    elements.get('authors', ''),
+                    elements.get('year', ''),
+                    elements.get('publisher', '')
+                )
+                results['search_details']['comprehensive_book_googlebooks'] = book_result_gb
+
+                if book_result_gb['found']:
+                    results['comprehensive_book_found_googlebooks'] = True
+                    results['any_found'] = True
+                    if book_result_gb.get('source_url'):
+                        results['verification_sources'].append({
+                            'type': 'Book Comprehensive Search (Google Books)',
+                            'url': book_result_gb['source_url'],
+                            'description': f"Book match (confidence: {book_result_gb.get('match_score', 0):.1%})"
+                        })
+
         # --- Priority 3: Website Accessibility (only if primary type is website, or as a last resort for others if no other verification succeeded) ---
         # Only check URL if it's detected as a website, or if it's a book/journal and no other verification has worked yet.
         if elements.get('url') and (ref_type == 'website' or not results['any_found']):
@@ -941,7 +1082,7 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.markdown("**📋 Supported Types:**")
     st.sidebar.markdown("📄 **Journals**: DOI, Crossref")
-    st.sidebar.markdown("📚 **Books**: ISBN, Open Library")
+    st.sidebar.markdown("📚 **Books**: ISBN, Open Library, Google Books")
     st.sidebar.markdown("🌐 **Websites**: URL accessibility")
     
     col1, col2 = st.columns([1, 1])
@@ -1073,7 +1214,6 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                 for i, result in enumerate(results):
                     ref_text = result['reference']
                     status = result['overall_status']
-                    # ref_type = result.get('reference_type', 'journal') # No longer used in main status line
                     
                     type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
                     type_icon = type_icons.get(result.get('reference_type', 'journal'), '📄') # Still use for icon
@@ -1140,12 +1280,21 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         elif current_ref_type == 'book':
                             if 'isbn_search' in search_details and not search_details['isbn_search'].get('found'):
                                 st.write(f"• ISBN check: {search_details['isbn_search'].get('reason', 'ISBN not found in Open Library.')}")
-                            if 'comprehensive_book' in search_details and not search_details['comprehensive_book'].get('found'):
-                                st.write(f"• Book database search: {search_details['comprehensive_book'].get('reason', 'No matching book found based on title, authors, year, and publisher.')}")
-                            elif 'comprehensive_book' in search_details and search_details['comprehensive_book'].get('found') and search_details['comprehensive_book'].get('match_score', 0) < 0.7: # Example threshold
-                                st.write(f"• Book database search: Found a weak match (score: {search_details['comprehensive_book'].get('match_score', 0):.1%}) but not a strong one for all elements.")
+                            
+                            # Check Open Library comprehensive search
+                            if 'comprehensive_book_openlibrary' in search_details and not search_details['comprehensive_book_openlibrary'].get('found'):
+                                st.write(f"• Book database search (Open Library): {search_details['comprehensive_book_openlibrary'].get('reason', 'No matching book found in Open Library.')}")
+                            elif 'comprehensive_book_openlibrary' in search_details and search_details['comprehensive_book_openlibrary'].get('found') and search_details['comprehensive_book_openlibrary'].get('match_score', 0) < 0.7:
+                                st.write(f"• Book database search (Open Library): Found a weak match (score: {search_details['comprehensive_book_openlibrary'].get('match_score', 0):.1%}) but not a strong one for all elements.")
+                            
+                            # Check Google Books comprehensive search
+                            if 'comprehensive_book_googlebooks' in search_details and not search_details['comprehensive_book_googlebooks'].get('found'):
+                                st.write(f"• Book database search (Google Books): {search_details['comprehensive_book_googlebooks'].get('reason', 'No matching book found in Google Books.')}")
+                            elif 'comprehensive_book_googlebooks' in search_details and search_details['comprehensive_book_googlebooks'].get('found') and search_details['comprehensive_book_googlebooks'].get('match_score', 0) < 0.7:
+                                st.write(f"• Book database search (Google Books): Found a weak match (score: {search_details['comprehensive_book_googlebooks'].get('match_score', 0):.1%}) but not a strong one for all elements.")
+
                             # Add a check if URL was present but not used for verification
-                            if extracted_elements.get('url') and not results['website_accessible'] and not results['isbn_found'] and not results['comprehensive_book_found']:
+                            if extracted_elements.get('url') and not results['website_accessible'] and not results['isbn_found'] and not results['comprehensive_book_found_openlibrary'] and not results['comprehensive_book_found_googlebooks']:
                                 st.write(f"• Note: A URL was found ({extracted_elements['url']}) but it did not lead to a verified book entry and was not treated as a primary website source for this book reference.")
                         
                         elif current_ref_type == 'website':
@@ -1178,7 +1327,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
         
         **Level 3: Existence Verification** 🚨
         - **Journals**: DOI validation, Crossref searches (now more comprehensive)
-        - **Books**: ISBN lookup via Open Library, comprehensive book search (now more comprehensive)
+        - **Books**: ISBN lookup via Open Library, comprehensive book search (now more comprehensive with Google Books)
         - **Websites**: URL accessibility checking
         - **Identifies likely fake references across all types**
         
