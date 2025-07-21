@@ -784,26 +784,26 @@ Invalid format reference without proper structure"""
                 
                 # Export results option
                 if st.button("📥 Export Verification Report", use_container_width=True):
-                    report = f"# Reference Verification Report\\n\\n"
-                    report += f"**Format:** {format_type}\\n"
-                    report += f"**Total References:** {total_refs}\\n"
-                    report += f"**Valid:** {valid_refs}\\n"
-                    report += f"**Issues:** {total_refs - valid_refs}\\n\\n"
+                    report = "# Reference Verification Report\n\n"
+                    report += f"**Format:** {format_type}\n"
+                    report += f"**Total References:** {total_refs}\n"
+                    report += f"**Valid:** {valid_refs}\n"
+                    report += f"**Issues:** {total_refs - valid_refs}\n\n"
                     
                     for result in results:
                         ref_type = result.get('reference_type', 'journal')
                         type_icon = {'journal': '📄', 'book': '📚', 'website': '🌐'}.get(ref_type, '📄')
                         
-                        report += f"## {type_icon} Reference {result['line_number']} ({ref_type.title()})\\n"
-                        report += f"**Status:** {result['overall_status']}\\n"
-                        report += f"**Text:** {result['reference']}\\n\\n"
+                        report += f"## {type_icon} Reference {result['line_number']} ({ref_type.title()})\n"
+                        report += f"**Status:** {result['overall_status']}\n"
+                        report += f"**Text:** {result['reference']}\n\n"
                         
                         if result['overall_status'] == 'valid':
                             sources = result['existence_check'].get('verification_sources', [])
                             for source in sources:
-                                report += f"- Verified via {source['type']}: {source['url']}\\n"
+                                report += f"- Verified via {source['type']}: {source['url']}\n"
                         
-                        report += "---\\n\\n"
+                        report += "---\n\n"
                     
                     st.download_button(
                         label="📄 Download Report",
@@ -1432,6 +1432,7 @@ class DatabaseSearcher:
                 }
             
             # Compare titles
+            title_similarity = 0
             if expected_title:
                 title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
                 
