@@ -1,77 +1,4 @@
-if data:
-                isbn_key = f'ISBN:{isbn_clean}'
-                if isbn_key in data:
-                    book_data = data[isbn_key]
-                    return {
-                        'found': True,
-                        'title': book_data.get('title', 'Unknown'),
-                        'authors': [author.get('name', 'Unknown') for author in book_data.get('authors', [])],
-                        'publishers': [pub.get('name', 'Unknown') for pub in book_data.get('publishers', [])],
-                        'publish_date': book_data.get('publish_date', 'Unknown'),
-                        'source_url': f"https://openlibrary.org/isbn/{isbn_clean}",
-                        'isbn': isbn_clean
-                    }
-            
-            return {'found': False, 'reason': 'ISBN not found in Open Library'}
-            
-        except Exception as e:
-            return {'found': False, 'reason': f'ISBN search error: {str(e)}'}
-
-    def search_books_comprehensive(self, title: str, authors: str, year: str, publisher: str) -> Dict:
-        """Search for books using title and author via Open Library API"""
-        try:
-            # Build search query
-            query_parts = []
-            
-            if title:
-                # Use significant words from title
-                title_words = re.findall(r'\b[a-zA-Z]{3,}\b', title)[:5]
-                query_parts.extend(title_words)
-            
-            if authors:
-                # Get author names
-                author_parts = re.split(r'[,&]', authors)[:2]
-                for author in author_parts:
-                    author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                    if author_clean:
-                        # Get both first and last names
-                        name_parts = author_clean.split()
-                        query_parts.extend([part for part in name_parts if len(part) > 2])
-            
-            if not query_parts:
-                return {'found': False, 'reason': 'Insufficient search terms for book search'}
-            
-            # Search Open Library
-            url = "https://openlibrary.org/search.json"
-            params = {
-                'q': ' '.join(query_parts),
-                'limit': 10
-            }
-            
-            if year:
-                params['publish_year'] = year
-            
-            response = self.session.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'docs' in data and data['docs']:
-                best_match = None
-                best_score = 0
-                
-                for doc in data['docs']:
-                    score = self._calculate_book_match_score(doc, title, authors, year, publisher)
-                    if score > best_score:
-                        best_score = score
-                        best_match = doc
-                
-                if best_score > 0.3:  # Book matching threshold
-                    isbn = None
-                    if 'isbn' in best_match:
-                        isbn = best_match['isbn'][0] if best_match['isbn'] else None
-                    
-                    return {
+return {
                         'found': True,
                         'match_score': best_score,
                         'matched_title': best_match.get('title', 'Unknown'),
@@ -95,24 +22,19 @@ if data:
             return {'found': False, 'reason': f'Book search error: {str(e)}'}
 
     def check_website_accessibility(self, url: str) -> Dict:
-        """Check if website URL is accessible and extract basic info"""
         if not url:
             return {'accessible': False, 'reason': 'No URL provided'}
         
         try:
-            # Clean URL
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
             
-            # Make a HEAD request first to check accessibility
             response = self.session.head(url, timeout=10, allow_redirects=True)
             
             if response.status_code == 200:
-                # Try to get page title with a GET request
                 try:
                     get_response = self.session.get(url, timeout=10)
                     if get_response.status_code == 200:
-                        # Extract title from HTML
                         title_match = re.search(r'<title[^>]*>([^<]+)</title>', get_response.text, re.IGNORECASE)
                         page_title = title_match.group(1).strip() if title_match else 'No title found'
                         
@@ -130,7 +52,6 @@ if data:
                             'status_code': get_response.status_code
                         }
                 except:
-                    # If GET fails, at least we know HEAD worked
                     return {
                         'accessible': True,
                         'status_code': response.status_code,
@@ -152,7 +73,6 @@ if data:
             }
 
     def _calculate_title_similarity(self, title1: str, title2: str) -> float:
-        """Calculate similarity between two titles"""
         words1 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title1.lower()))
         words2 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title2.lower()))
         
@@ -165,16 +85,13 @@ if data:
         return len(intersection) / len(union) if union else 0.0
 
     def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str) -> float:
-        """Calculate comprehensive match score"""
         score = 0.0
         
-        # Title matching (50% weight)
         if 'title' in item and item['title'] and target_title:
             item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
             title_sim = self._calculate_title_similarity(target_title, item_title)
             score += title_sim * 0.5
         
-        # Author matching (25% weight)
         if 'author' in item and item['author'] and target_authors:
             item_authors = []
             for author in item['author']:
@@ -194,7 +111,6 @@ if data:
                 author_score = len(common_authors) / max(len(target_surnames), 1)
                 score += author_score * 0.25
         
-        # Year matching (15% weight)
         if target_year:
             item_year = None
             if 'published-print' in item and 'date-parts' in item['published-print']:
@@ -205,7 +121,6 @@ if data:
             if item_year and item_year == target_year:
                 score += 0.15
         
-        # Journal matching (10% weight)
         if 'container-title' in item and item['container-title'] and target_journal:
             item_journal = item['container-title'][0] if isinstance(item['container-title'], list) else str(item['container-title'])
             journal_sim = self._calculate_title_similarity(target_journal, item_journal)
@@ -214,16 +129,13 @@ if data:
         return score
 
     def _calculate_book_match_score(self, book_doc: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str) -> float:
-        """Calculate how well a book result matches our reference"""
         score = 0.0
         
-        # Title matching (40% weight)
         if 'title' in book_doc and target_title:
             book_title = str(book_doc['title']).lower()
             title_sim = self._calculate_title_similarity(target_title, book_title)
             score += title_sim * 0.4
         
-        # Author matching (30% weight)
         if 'author_name' in book_doc and target_authors:
             book_authors = [name.lower() for name in book_doc['author_name']]
             
@@ -231,12 +143,10 @@ if data:
             for author in re.split(r'[,&]', target_authors):
                 author_clean = re.sub(r'[^\w\s]', '', author).strip()
                 if author_clean:
-                    # Get both first and last names
                     name_parts = author_clean.split()
                     target_author_parts.extend([part.lower() for part in name_parts if len(part) > 2])
             
             if book_authors and target_author_parts:
-                # Check for name overlap
                 common_names = 0
                 for book_author in book_authors:
                     for target_part in target_author_parts:
@@ -247,12 +157,10 @@ if data:
                 author_score = common_names / max(len(target_author_parts), 1)
                 score += author_score * 0.3
         
-        # Year matching (20% weight)
         if target_year and 'first_publish_year' in book_doc:
             if str(book_doc['first_publish_year']) == target_year:
                 score += 0.2
         
-        # Publisher matching (10% weight)
         if target_publisher and 'publisher' in book_doc:
             book_publishers = [pub.lower() for pub in book_doc['publisher']]
             target_publisher_lower = target_publisher.lower()
@@ -270,7 +178,6 @@ class ReferenceVerifier:
         self.searcher = DatabaseSearcher()
 
     def verify_references(self, text: str, format_type: str, progress_callback=None) -> List[Dict]:
-        """Three-level verification: Structure → Content → Existence"""
         references = self.parser.identify_references(text)
         results = []
         
@@ -293,7 +200,6 @@ class ReferenceVerifier:
                 'extracted_elements': {}
             }
             
-            # Parse based on format and extract reference type
             ref_type = self.parser.detect_reference_type(ref.text)
             
             if format_type == "APA":
@@ -308,21 +214,18 @@ class ReferenceVerifier:
             result['parsed_data'] = parsed
             result['reference_type'] = ref_type
             
-            # LEVEL 1: Structure Check (now type-aware)
             structure_check = self.parser.check_structural_format(ref.text, format_type, ref_type)
             result['structure_check'] = structure_check
             
             if structure_check['structure_valid']:
                 result['structure_status'] = 'valid'
                 
-                # LEVEL 2: Content Extraction (now type-aware)
                 elements = self.parser.extract_reference_elements(ref.text, format_type, ref_type)
                 result['extracted_elements'] = elements
                 
                 if elements['extraction_confidence'] in ['medium', 'high']:
                     result['content_status'] = 'extracted'
                     
-                    # LEVEL 3: Existence Verification (now type-specific)
                     existence_results = self._verify_existence(elements)
                     result['existence_check'] = existence_results
                     
@@ -345,12 +248,11 @@ class ReferenceVerifier:
                 result['overall_status'] = 'structure_error'
             
             results.append(result)
-            time.sleep(0.3)  # Rate limiting
+            time.sleep(0.3)
         
         return results
 
     def _verify_existence(self, elements: Dict) -> Dict:
-        """Verify if reference elements can be found in databases with enhanced validation for all types"""
         results = {
             'any_found': False,
             'doi_valid': False,
@@ -361,12 +263,11 @@ class ReferenceVerifier:
             'isbn_found': False,
             'website_accessible': False,
             'search_details': {},
-            'verification_sources': []  # Track all sources that validated this reference
+            'verification_sources': []
         }
         
         ref_type = elements.get('reference_type', 'journal')
         
-        # Enhanced DOI check with content verification (for journals and some books)
         if elements.get('doi'):
             doi_result = self.searcher.check_doi_and_verify_content(
                 elements['doi'], 
@@ -386,9 +287,7 @@ class ReferenceVerifier:
             else:
                 results['doi_invalid'] = True
         
-        # Type-specific verification
         if ref_type == 'journal':
-            # Journal article verification
             if elements.get('title'):
                 title_result = self.searcher.search_by_exact_title(elements['title'])
                 results['search_details']['title_search'] = title_result
@@ -405,7 +304,6 @@ class ReferenceVerifier:
                 else:
                     results['title_not_found'] = True
             
-            # Comprehensive journal search
             comprehensive_result = self.searcher.search_comprehensive(
                 elements.get('authors', ''),
                 elements.get('title', ''),
@@ -425,8 +323,6 @@ class ReferenceVerifier:
                     })
         
         elif ref_type == 'book':
-            # Book verification
-            # First try ISBN if available
             if elements.get('isbn'):
                 isbn_result = self.searcher.search_books_isbn(elements['isbn'])
                 results['search_details']['isbn_search'] = isbn_result
@@ -441,7 +337,6 @@ class ReferenceVerifier:
                             'description': f"ISBN {isbn_result['isbn']} found in Open Library"
                         })
             
-            # Then try comprehensive book search
             book_result = self.searcher.search_books_comprehensive(
                 elements.get('title', ''),
                 elements.get('authors', ''),
@@ -461,7 +356,6 @@ class ReferenceVerifier:
                     })
         
         elif ref_type == 'website':
-            # Website verification
             if elements.get('url'):
                 website_result = self.searcher.check_website_accessibility(elements['url'])
                 results['search_details']['website_check'] = website_result
@@ -478,12 +372,10 @@ class ReferenceVerifier:
         return results
 
     def _show_verification_details(self, result: Dict, ref_type: str):
-        """Show type-specific verification details for valid references"""
         existence = result['existence_check']
         search_details = existence.get('search_details', {})
         
         if ref_type == 'journal':
-            # Show DOI details for journals
             doi_details = search_details.get('doi')
             if doi_details and doi_details.get('valid'):
                 with st.expander("📋 DOI Verification Details"):
@@ -497,7 +389,6 @@ class ReferenceVerifier:
                         st.markdown(f"**Crossref API:** [{doi_details['crossref_url']}]({doi_details['crossref_url']})")
         
         elif ref_type == 'book':
-            # Show book verification details
             isbn_details = search_details.get('isbn_search')
             book_details = search_details.get('book_search')
             
@@ -519,7 +410,6 @@ class ReferenceVerifier:
                         st.write(f"**Match Confidence:** {book_details['match_score']:.1%}")
         
         elif ref_type == 'website':
-            # Show website verification details
             website_details = search_details.get('website_check')
             if website_details and website_details.get('accessible'):
                 with st.expander("🌐 Website Verification Details"):
@@ -529,7 +419,6 @@ class ReferenceVerifier:
                     st.write(f"**Content Type:** {website_details.get('content_type', 'N/A')}")
 
     def _show_content_warning_details(self, result: Dict, ref_type: str):
-        """Show why content has warnings based on reference type"""
         existence = result['existence_check']
         search_details = existence.get('search_details', {})
         
@@ -547,13 +436,11 @@ class ReferenceVerifier:
                 st.write(f"**Search found {book_result['total_results']} potential matches, but none were close enough**")
 
     def _show_fake_evidence(self, result: Dict, ref_type: str):
-        """Show evidence for fake references based on type"""
         existence = result['existence_check']
         evidence = []
         search_details = existence.get('search_details', {})
         
         if ref_type == 'journal':
-            # Enhanced DOI analysis for journals
             doi_details = search_details.get('doi')
             if doi_details and not doi_details.get('valid'):
                 reason = doi_details.get('reason', 'Unknown error')
@@ -573,7 +460,6 @@ class ReferenceVerifier:
                     evidence.append(f"No matching journal publications found ({comp_result.get('reason', 'unknown reason')})")
         
         elif ref_type == 'book':
-            # Book-specific evidence
             if 'isbn_search' in search_details:
                 isbn_result = search_details['isbn_search']
                 if not isbn_result.get('found'):
@@ -585,7 +471,6 @@ class ReferenceVerifier:
                     evidence.append(f"No matching books found ({book_result.get('reason', 'unknown reason')})")
         
         elif ref_type == 'website':
-            # Website-specific evidence
             if 'website_check' in search_details:
                 website_result = search_details['website_check']
                 if not website_result.get('accessible'):
@@ -596,7 +481,6 @@ class ReferenceVerifier:
             for item in evidence:
                 st.write(f"• {item}")
         
-        # Show what DOI actually contains if there was a title mismatch (for journals)
         if ref_type == 'journal':
             doi_details = search_details.get('doi')
             if doi_details and 'actual_title' in doi_details:
@@ -621,7 +505,6 @@ def main():
     st.markdown("**Three-level verification**: Structure → Content → Existence")
     st.markdown("Supports **journals** 📄, **books** 📚, and **websites** 🌐")
     
-    # Sidebar for format selection
     st.sidebar.header("Settings")
     format_type = st.sidebar.selectbox(
         "Select Reference Format",
@@ -640,13 +523,11 @@ def main():
     st.sidebar.markdown("📚 **Books**: ISBN, Open Library")
     st.sidebar.markdown("🌐 **Websites**: URL accessibility")
     
-    # Main interface
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.header("📝 Input References")
         
-        # Instructions
         st.markdown("""
         **Instructions:**
         1. Paste your reference list below (one reference per line)
@@ -659,7 +540,6 @@ def main():
         - 🌐 Websites (with URL checking)
         """)
         
-        # Text area for references
         reference_text = st.text_area(
             "Paste your references here (one per line):",
             height=350,
@@ -685,7 +565,6 @@ World Health Organization. (2021). COVID-19 pandemic response. Retrieved March 1
             help="Each reference should be on a separate line. The system will automatically detect whether each reference is a journal article, book, or website."
         )
         
-        # Control buttons
         col_a, col_b = st.columns(2)
         with col_a:
             verify_button = st.button("🔍 Verify References", type="primary", use_container_width=True)
@@ -700,7 +579,6 @@ Fake, A. B. (2023). Non-existent study on imaginary topics. Made Up Press. ISBN:
 Invalid format reference without proper structure"""
                 st.session_state.sample_text = sample_data
         
-        # Quick tips
         with st.expander("💡 Quick Tips"):
             st.markdown("""
             **For best results:**
@@ -720,7 +598,6 @@ Invalid format reference without proper structure"""
     with col2:
         st.header("📊 Verification Results")
         
-        # Use sample data if button was clicked
         if 'sample_text' in st.session_state:
             reference_text = st.session_state.sample_text
             del st.session_state.sample_text
@@ -743,7 +620,6 @@ Invalid format reference without proper structure"""
             status_text.empty()
             
             if results:
-                # Summary statistics
                 total_refs = len(results)
                 valid_refs = sum(1 for r in results if r['overall_status'] == 'valid')
                 structure_errors = sum(1 for r in results if r['overall_status'] == 'structure_error')
@@ -751,7 +627,6 @@ Invalid format reference without proper structure"""
                 content_errors = sum(1 for r in results if r['overall_status'] == 'content_error')
                 likely_fake = sum(1 for r in results if r['overall_status'] == 'likely_fake')
                 
-                # Count by type
                 type_counts = {}
                 for result in results:
                     ref_type = result.get('reference_type', 'journal')
@@ -760,8 +635,6 @@ Invalid format reference without proper structure"""
                 col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6)
                 with col_a:
                     st.metric("Total", total_refs)
-                with col_b:
-                    st.metric("✅ Valid", valid_refs)
                 with col_c:
                     st.metric("🔧 Structure", structure_errors)
                 with col_d:
@@ -772,7 +645,6 @@ Invalid format reference without proper structure"""
                     accuracy = round((valid_refs / total_refs * 100) if total_refs > 0 else 0, 1)
                     st.metric("Accuracy", f"{accuracy}%")
                 
-                # Show reference type breakdown
                 if type_counts:
                     st.markdown("**Reference Types Detected:**")
                     type_display = []
@@ -782,7 +654,6 @@ Invalid format reference without proper structure"""
                         type_display.append(f"{icon} {ref_type.title()}: {count}")
                     st.write(" • ".join(type_display))
                 
-                # Export results option
                 if st.button("📥 Export Verification Report", use_container_width=True):
                     report = "# Reference Verification Report\n\n"
                     report += f"**Format:** {format_type}\n"
@@ -814,13 +685,11 @@ Invalid format reference without proper structure"""
                 
                 st.markdown("---")
                 
-                # Display results with new categorization and type awareness
                 for i, result in enumerate(results):
                     ref_text = result['reference']
                     status = result['overall_status']
                     ref_type = result.get('reference_type', 'journal')
                     
-                    # Add reference type indicator
                     type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐'}
                     type_icon = type_icons.get(ref_type, '📄')
                     
@@ -828,7 +697,6 @@ Invalid format reference without proper structure"""
                         st.success(f"✅ {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Verified and Valid")
                         st.write(ref_text)
                         
-                        # Show verification sources with clickable links
                         existence = result['existence_check']
                         verification_sources = existence.get('verification_sources', [])
                         
@@ -844,7 +712,6 @@ Invalid format reference without proper structure"""
                                 else:
                                     st.write(f"• **{source_type}**: {description}")
                         
-                        # Show type-specific verification details
                         verifier._show_verification_details(result, ref_type)
                     
                     elif status == 'structure_error':
@@ -867,14 +734,12 @@ Invalid format reference without proper structure"""
                         st.write(ref_text)
                         st.write(f"**Issue:** {ref_type.title()} structure is correct, but some content details may be incorrect.")
                         
-                        # Show type-specific search results
                         verifier._show_content_warning_details(result, ref_type)
                     
                     elif status == 'likely_fake':
                         st.error(f"🚨 {type_icon} **Reference {result['line_number']}** ({ref_type.title()}): Likely Fake Reference")
                         st.write(ref_text)
                         
-                        # Show detailed evidence based on type
                         verifier._show_fake_evidence(result, ref_type)
                     
                     if i < len(results) - 1:
@@ -885,7 +750,6 @@ Invalid format reference without proper structure"""
         elif verify_button:
             st.warning("Please enter some references to verify.")
     
-    # Help section
     with st.expander("ℹ️ How the Three-Level Verification Works"):
         st.markdown("""
         **Level 1: Structure Check** 🔧
@@ -968,25 +832,17 @@ class Reference:
 
 class ReferenceParser:
     def __init__(self):
-        # More flexible patterns focusing on structure rather than exact format
         self.apa_patterns = {
-            # Journal articles
             'journal_year_in_parentheses': r'\((\d{4}[a-z]?)\)',
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
             'journal_info': r'([A-Za-z][^,\d]*[A-Za-z]),',
             'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)',
-            
-            # Books
             'book_year_in_parentheses': r'\((\d{4}[a-z]?)\)',
             'book_title_italics': r'\)\.\s*([^.]+)\.',
             'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp)[^.]*)',
-            
-            # Websites
             'website_title': r'([^.]+)\.\s*(?:Retrieved|Accessed)',
             'website_url': r'(https?://[^\s]+)',
             'website_access_date': r'(?:Retrieved|Accessed)\s+([^,]+)',
-            
-            # Common patterns
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
             'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))',
             'isbn_pattern': r'ISBN:?\s*([\d-]+)',
@@ -994,28 +850,20 @@ class ReferenceParser:
         }
         
         self.vancouver_patterns = {
-            # Journal articles
             'starts_with_number': r'^(\d+)\.',
             'journal_title_section': r'^\d+\.\s*[^.]+\.\s*([^.]+)\.',
             'journal_year': r'([A-Za-z][^.;]+)[\s.]*(\d{4})',
             'volume_pages_vancouver': r';(\d+)(?:\((\d+)\))?:([^.]+)',
-            
-            # Books
             'book_title_section': r'^\d+\.\s*[^.]+\.\s*([^.]+)\.',
             'book_publisher': r'([A-Z][^;:]+);\s*(\d{4})',
-            
-            # Websites
             'website_title_vancouver': r'^\d+\.\s*[^.]+\.\s*([^.]+)\.',
             'website_url_vancouver': r'Available\s+(?:from|at):\s*(https?://[^\s]+)',
-            
-            # Common patterns
             'author_pattern_vancouver': r'^\d+\.\s*([^.]+)\.',
         }
         
-        # Reference type detection patterns
         self.type_indicators = {
             'journal': [
-                r'[,;]\s*\d+(?:\(\d+\))?[,:]\s*\d+(?:-\d+)?',  # volume(issue):pages
+                r'[,;]\s*\d+(?:\(\d+\))?[,:]\s*\d+(?:-\d+)?',
                 r'Journal|Review|Proceedings|Quarterly|Annual',
                 r'https?://doi\.org/',
             ],
@@ -1034,10 +882,7 @@ class ReferenceParser:
         }
 
     def detect_reference_type(self, ref_text: str) -> str:
-        """Detect if reference is journal, book, or website"""
         ref_lower = ref_text.lower()
-        
-        # Count indicators for each type
         type_scores = {'journal': 0, 'book': 0, 'website': 0}
         
         for ref_type, patterns in self.type_indicators.items():
@@ -1045,27 +890,24 @@ class ReferenceParser:
                 if re.search(pattern, ref_lower):
                     type_scores[ref_type] += 1
         
-        # Return type with highest score, default to journal
         if any(score > 0 for score in type_scores.values()):
             return max(type_scores, key=type_scores.get)
         else:
-            return 'journal'  # Default assumption
+            return 'journal'
 
     def identify_references(self, text: str) -> List[Reference]:
-        """Split text into individual references and detect their types"""
         lines = text.strip().split('\n')
         references = []
         
         for i, line in enumerate(lines):
             line = line.strip()
-            if line and len(line) > 30:  # Slightly longer minimum for complete references
+            if line and len(line) > 30:
                 ref = Reference(text=line, line_number=i+1)
                 references.append(ref)
         
         return references
 
     def check_structural_format(self, ref_text: str, format_type: str, ref_type: str = None) -> Dict:
-        """Check if reference has correct structural layout (lenient) based on type"""
         result = {
             'structure_valid': False,
             'structure_issues': [],
@@ -1076,7 +918,6 @@ class ReferenceParser:
         detected_type = result['reference_type']
         
         if format_type == "APA":
-            # Check basic APA structure based on type
             has_year = bool(re.search(self.apa_patterns['journal_year_in_parentheses'], ref_text))
             has_title = bool(re.search(self.apa_patterns['journal_title_after_year'], ref_text))
             
@@ -1119,9 +960,8 @@ class ReferenceParser:
                     result['structure_issues'].append("Missing access date information")
                 
                 result['structure_valid'] = has_title and has_url
-            
+        
         elif format_type == "Vancouver":
-            # Check basic Vancouver structure
             starts_with_number = bool(re.search(self.vancouver_patterns['starts_with_number'], ref_text))
             has_title = bool(re.search(self.vancouver_patterns['journal_title_section'], ref_text))
             
@@ -1151,7 +991,6 @@ class ReferenceParser:
         return result
 
     def extract_reference_elements(self, ref_text: str, format_type: str, ref_type: str = None) -> Dict:
-        """Extract key elements from reference (best effort) based on type"""
         elements = {
             'authors': None,
             'year': None,
@@ -1168,39 +1007,31 @@ class ReferenceParser:
         
         detected_type = elements['reference_type']
         
-        # Extract common elements regardless of type
-        # Extract DOI (works for all types)
         doi_match = re.search(self.apa_patterns['doi_pattern'], ref_text)
         if doi_match:
             elements['doi'] = doi_match.group(1)
         
-        # Extract URL
         url_match = re.search(self.apa_patterns['url_pattern'], ref_text)
         if url_match:
             elements['url'] = url_match.group(1)
         
-        # Extract ISBN for books
         isbn_match = re.search(self.apa_patterns['isbn_pattern'], ref_text)
         if isbn_match:
             elements['isbn'] = isbn_match.group(1)
         
         if format_type == "APA":
-            # Extract year (high confidence)
             year_match = re.search(self.apa_patterns['journal_year_in_parentheses'], ref_text)
             if year_match:
                 elements['year'] = year_match.group(1)
             
-            # Extract title (high confidence)
             title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text)
             if title_match:
                 elements['title'] = title_match.group(1).strip()
             
-            # Extract authors (medium confidence - before year)
             author_match = re.search(self.apa_patterns['author_pattern'], ref_text)
             if author_match:
                 elements['authors'] = author_match.group(1).strip()
             
-            # Type-specific extraction
             if detected_type == 'journal':
                 journal_match = re.search(self.apa_patterns['journal_info'], ref_text)
                 if journal_match:
@@ -1215,24 +1046,20 @@ class ReferenceParser:
                 access_match = re.search(self.apa_patterns['website_access_date'], ref_text)
                 if access_match:
                     elements['access_date'] = access_match.group(1).strip()
-            
+        
         elif format_type == "Vancouver":
-            # Extract year
             year_match = re.search(r'(\d{4})', ref_text)
             if year_match:
                 elements['year'] = year_match.group(1)
             
-            # Extract title
             title_match = re.search(self.vancouver_patterns['journal_title_section'], ref_text)
             if title_match:
                 elements['title'] = title_match.group(1).strip()
             
-            # Extract authors
             author_match = re.search(self.vancouver_patterns['author_pattern_vancouver'], ref_text)
             if author_match:
                 elements['authors'] = author_match.group(1).strip()
             
-            # Type-specific extraction
             if detected_type == 'journal':
                 journal_match = re.search(r'([A-Za-z][^.;\d]*[A-Za-z])[\s.]*\d{4}', ref_text)
                 if journal_match:
@@ -1243,7 +1070,6 @@ class ReferenceParser:
                 if publisher_match:
                     elements['publisher'] = publisher_match.group(1).strip()
         
-        # Assess extraction confidence based on type
         if detected_type == 'journal':
             required_fields = [elements['authors'], elements['year'], elements['title'], elements['journal']]
         elif detected_type == 'book':
@@ -1262,7 +1088,6 @@ class ReferenceParser:
         return elements
 
     def parse_apa_reference(self, ref_text: str) -> Dict:
-        """Parse APA format reference with improved accuracy"""
         result = {
             'format_valid': False,
             'authors': None,
@@ -1274,19 +1099,16 @@ class ReferenceParser:
             'errors': []
         }
         
-        # Extract DOI first
         doi_match = re.search(self.apa_patterns['doi_pattern'], ref_text)
         if doi_match:
             result['doi'] = doi_match.group(1)
         
-        # Extract year
         year_match = re.search(self.apa_patterns['journal_year_in_parentheses'], ref_text)
         if year_match:
             result['year'] = year_match.group(1)
         else:
             result['errors'].append("Year not found in correct format (YYYY)")
         
-        # Extract authors
         author_match = re.search(self.apa_patterns['author_pattern'], ref_text)
         if author_match:
             authors_text = author_match.group(1).strip()
@@ -1295,14 +1117,12 @@ class ReferenceParser:
         else:
             result['errors'].append("Authors not found or incorrectly formatted")
         
-        # Extract title
         title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text)
         if title_match:
             result['title'] = title_match.group(1).strip()
         else:
             result['errors'].append("Title not found")
         
-        # Extract journal or publisher based on detected type
         ref_type = self.detect_reference_type(ref_text)
         if ref_type == 'journal':
             journal_match = re.search(self.apa_patterns['journal_info'], ref_text)
@@ -1313,14 +1133,12 @@ class ReferenceParser:
             if publisher_match:
                 result['publisher'] = publisher_match.group(1).strip()
         
-        # Format validation
         if len(result['errors']) == 0:
             result['format_valid'] = True
         
         return result
 
     def parse_vancouver_reference(self, ref_text: str) -> Dict:
-        """Parse Vancouver format reference with improved accuracy"""
         result = {
             'format_valid': False,
             'authors': None,
@@ -1331,32 +1149,27 @@ class ReferenceParser:
             'errors': []
         }
         
-        # Check for number at start
         if not re.match(r'^\d+\.', ref_text):
             result['errors'].append("Vancouver format should start with number followed by period")
         
-        # Extract authors
         author_match = re.search(self.vancouver_patterns['author_pattern_vancouver'], ref_text)
         if author_match:
             result['authors'] = author_match.group(1).strip()
         else:
             result['errors'].append("Authors not found")
         
-        # Extract title
         title_match = re.search(self.vancouver_patterns['journal_title_section'], ref_text)
         if title_match:
             result['title'] = title_match.group(1).strip()
         else:
             result['errors'].append("Title not found")
         
-        # Extract year
         year_match = re.search(r'(\d{4})', ref_text)
         if year_match:
             result['year'] = year_match.group(1)
         else:
             result['errors'].append("Year not found")
         
-        # Extract journal or publisher based on type
         ref_type = self.detect_reference_type(ref_text)
         if ref_type == 'journal':
             journal_match = re.search(self.vancouver_patterns['journal_year'], ref_text)
@@ -1380,12 +1193,10 @@ class DatabaseSearcher:
         })
 
     def check_doi_and_verify_content(self, doi: str, expected_title: str) -> Dict:
-        """Check if DOI exists and verify title matches the actual publication"""
         if not doi:
             return {'valid': False, 'reason': 'No DOI provided'}
         
         try:
-            # First check if DOI resolves
             url = f"https://doi.org/{doi}"
             response = self.session.head(url, timeout=10, allow_redirects=True)
             
@@ -1396,7 +1207,6 @@ class DatabaseSearcher:
                     'doi_url': url
                 }
             
-            # Get DOI metadata from Crossref API
             crossref_url = f"https://api.crossref.org/works/{doi}"
             metadata_response = self.session.get(crossref_url, timeout=15)
             
@@ -1419,7 +1229,6 @@ class DatabaseSearcher:
             
             work = metadata['message']
             
-            # Extract actual title from DOI metadata
             actual_title = None
             if 'title' in work and work['title']:
                 actual_title = work['title'][0] if isinstance(work['title'], list) else str(work['title'])
@@ -1431,12 +1240,11 @@ class DatabaseSearcher:
                     'doi_url': url
                 }
             
-            # Compare titles
             title_similarity = 0
             if expected_title:
                 title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
                 
-                if title_similarity < 0.7:  # Strict similarity threshold
+                if title_similarity < 0.7:
                     return {
                         'valid': False,
                         'reason': 'Title mismatch with DOI content',
@@ -1446,7 +1254,6 @@ class DatabaseSearcher:
                         'doi_url': url
                     }
             
-            # Extract additional metadata
             authors = []
             if 'author' in work:
                 for author in work['author']:
@@ -1485,20 +1292,16 @@ class DatabaseSearcher:
             }
 
     def search_by_exact_title(self, title: str) -> Dict:
-        """Search for exact title matches across databases with source links"""
         if not title or len(title.strip()) < 10:
             return {'found': False, 'reason': 'Title too short for reliable search'}
         
-        # Search Crossref for exact title matches
         try:
-            # Clean title for search
             title_clean = re.sub(r'[^\w\s]', ' ', title)
             title_words = [word for word in title_clean.split() if len(word) > 2]
             
             if len(title_words) < 3:
                 return {'found': False, 'reason': 'Insufficient title words for search'}
             
-            # Use title as main query
             url = "https://api.crossref.org/works"
             params = {
                 'query.title': title_clean,
@@ -1514,14 +1317,12 @@ class DatabaseSearcher:
             if 'message' in data and 'items' in data['message']:
                 items = data['message']['items']
                 
-                # Look for very close title matches
                 for item in items:
                     if 'title' in item and item['title']:
                         item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
                         similarity = self._calculate_title_similarity(title.lower(), item_title.lower())
                         
-                        if similarity > 0.8:  # High similarity threshold
-                            # Get the best available source link
+                        if similarity > 0.8:
                             source_url = None
                             if 'DOI' in item:
                                 source_url = f"https://doi.org/{item['DOI']}"
@@ -1545,18 +1346,14 @@ class DatabaseSearcher:
             return {'found': False, 'reason': f'Title search error: {str(e)}'}
 
     def search_comprehensive(self, authors: str, title: str, year: str, journal: str) -> Dict:
-        """Comprehensive search using multiple elements with source links"""
         try:
-            # Build multi-part query
             query_parts = []
             
             if title:
-                # Use significant words from title
                 title_words = re.findall(r'\b[a-zA-Z]{4,}\b', title)[:4]
                 query_parts.extend(title_words)
             
             if authors:
-                # Get main author surnames
                 author_parts = re.split(r'[,&]', authors)[:2]
                 for author in author_parts:
                     author_clean = re.sub(r'[^\w\s]', '', author).strip()
@@ -1596,8 +1393,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = item
                 
-                if best_score > 0.5:  # Raised threshold for better matches
-                    # Get the best available source link
+                if best_score > 0.5:
                     source_url = None
                     if 'DOI' in best_match:
                         source_url = f"https://doi.org/{best_match['DOI']}"
@@ -1626,12 +1422,10 @@ class DatabaseSearcher:
             return {'found': False, 'reason': f'Search error: {str(e)}'}
 
     def search_books_isbn(self, isbn: str) -> Dict:
-        """Search for books using ISBN via Open Library API"""
         if not isbn:
             return {'found': False, 'reason': 'No ISBN provided'}
         
         try:
-            # Clean ISBN
             isbn_clean = re.sub(r'[^\d-]', '', isbn)
             
             url = f"https://openlibrary.org/api/books"
@@ -1649,3 +1443,69 @@ class DatabaseSearcher:
             if data:
                 isbn_key = f'ISBN:{isbn_clean}'
                 if isbn_key in data:
+                    book_data = data[isbn_key]
+                    return {
+                        'found': True,
+                        'title': book_data.get('title', 'Unknown'),
+                        'authors': [author.get('name', 'Unknown') for author in book_data.get('authors', [])],
+                        'publishers': [pub.get('name', 'Unknown') for pub in book_data.get('publishers', [])],
+                        'publish_date': book_data.get('publish_date', 'Unknown'),
+                        'source_url': f"https://openlibrary.org/isbn/{isbn_clean}",
+                        'isbn': isbn_clean
+                    }
+            
+            return {'found': False, 'reason': 'ISBN not found in Open Library'}
+            
+        except Exception as e:
+            return {'found': False, 'reason': f'ISBN search error: {str(e)}'}
+
+    def search_books_comprehensive(self, title: str, authors: str, year: str, publisher: str) -> Dict:
+        try:
+            query_parts = []
+            
+            if title:
+                title_words = re.findall(r'\b[a-zA-Z]{3,}\b', title)[:5]
+                query_parts.extend(title_words)
+            
+            if authors:
+                author_parts = re.split(r'[,&]', authors)[:2]
+                for author in author_parts:
+                    author_clean = re.sub(r'[^\w\s]', '', author).strip()
+                    if author_clean:
+                        name_parts = author_clean.split()
+                        query_parts.extend([part for part in name_parts if len(part) > 2])
+            
+            if not query_parts:
+                return {'found': False, 'reason': 'Insufficient search terms for book search'}
+            
+            url = "https://openlibrary.org/search.json"
+            params = {
+                'q': ' '.join(query_parts),
+                'limit': 10
+            }
+            
+            if year:
+                params['publish_year'] = year
+            
+            response = self.session.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'docs' in data and data['docs']:
+                best_match = None
+                best_score = 0
+                
+                for doc in data['docs']:
+                    score = self._calculate_book_match_score(doc, title, authors, year, publisher)
+                    if score > best_score:
+                        best_score = score
+                        best_match = doc
+                
+                if best_score > 0.3:
+                    isbn = None
+                    if 'isbn' in best_match:
+                        isbn = best_match['isbn'][0] if best_match['isbn'] else None
+                    
+                    return {
+                        'found': True,
