@@ -25,7 +25,7 @@ class ReferenceParser:
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
             'journal_info': r'([A-Za-z][^,\d]*[A-Za-z]),',
             'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)',
-            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp)[^.]*)',
+            'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier)[^.]*)', # Added Kluwer, Elsevier
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
             'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))',
             'isbn_pattern': r'ISBN:?\s*([\d-]+)',
@@ -49,9 +49,11 @@ class ReferenceParser:
                 r'https?://doi\.org/'
             ],
             'book': [
-                r'(?:Press|Publishers?|Publications?|Books?|Academic|University)',
+                r'(?:Press|Publishers?|Publications?|Books?|Academic|University|Kluwer|Elsevier)', # Added Kluwer, Elsevier
                 r'ISBN:?\s*[\d-]+',
-                r'(?:pp?\.|pages?)\s*\d+(?:-\d+)?'
+                r'(?:pp?\.|pages?)\s*\d+(?:-\d+)?',
+                r'\b(edition|ed\.)\b', # Strong book indicator
+                r'\b(manual|handbook|textbook)\b' # Strong book indicator
             ],
             'website': [
                 r'(?:Retrieved|Accessed)\s+(?:from|on)',
@@ -62,6 +64,18 @@ class ReferenceParser:
 
     def detect_reference_type(self, ref_text: str) -> str:
         ref_lower = ref_text.lower()
+
+        # Strongest indicators first
+        if re.search(self.apa_patterns['doi_pattern'], ref_text):
+            return 'journal'
+        if re.search(self.apa_patterns['isbn_pattern'], ref_text):
+            return 'book'
+        # Check for website if it has a URL AND an access date/retrieved phrase
+        if re.search(self.apa_patterns['url_pattern'], ref_text) and \
+           re.search(self.apa_patterns['website_access_date'], ref_text):
+            return 'website'
+        
+        # Fallback to scoring for less clear cases
         type_scores = {'journal': 0, 'book': 0, 'website': 0}
         
         for ref_type, patterns in self.type_indicators.items():
@@ -69,10 +83,26 @@ class ReferenceParser:
                 if re.search(pattern, ref_lower):
                     type_scores[ref_type] += 1
         
+        # Boost scores for explicit keywords not covered by direct identifiers
+        if re.search(r'\b(edition|ed\.)\b', ref_lower) or \
+           re.search(r'\b(manual|handbook|textbook)\b', ref_lower):
+            type_scores['book'] += 1.5 # Boost book score for these strong indicators
+
+        if re.search(r'\b(volume|issue|pages|p\.)\b', ref_lower):
+            type_scores['journal'] += 1.5 # Boost journal score
+
         if any(score > 0 for score in type_scores.values()):
-            return max(type_scores, key=type_scores.get)
+            # If multiple types have the same max score, prioritize book > journal > website
+            max_score = max(type_scores.values())
+            if type_scores['book'] == max_score and max_score > 0:
+                return 'book'
+            if type_scores['journal'] == max_score and max_score > 0:
+                return 'journal'
+            if type_scores['website'] == max_score and max_score > 0:
+                return 'website'
+            return max(type_scores, key=type_scores.get) # Fallback to highest score
         else:
-            return 'journal' # Default to journal if no specific type indicators are found
+            return 'journal' # Default if nothing strong is found
 
     def identify_references(self, text: str) -> List[Reference]:
         lines = text.strip().split('\n')
@@ -175,7 +205,7 @@ class ReferenceParser:
             'title': None,
             'journal': None,
             'publisher': None,
-            'url': None,
+            'url': None, # Initialize as None
             'isbn': None,
             'doi': None,
             'access_date': None,
@@ -185,18 +215,21 @@ class ReferenceParser:
         
         detected_type = elements['reference_type']
         
-        # Extract common elements
+        # Extract DOI and ISBN first, as they are strong identifiers
         doi_match = re.search(self.apa_patterns['doi_pattern'], ref_text)
         if doi_match:
             elements['doi'] = doi_match.group(1)
         
-        url_match = re.search(self.apa_patterns['url_pattern'], ref_text)
-        if url_match:
-            elements['url'] = url_match.group(1)
-        
         isbn_match = re.search(self.apa_patterns['isbn_pattern'], ref_text)
         if isbn_match:
             elements['isbn'] = isbn_match.group(1)
+
+        # Only extract generic URL if it's likely a website or no other strong identifier has been found yet
+        # This prevents a book reference from picking up a random URL in its text.
+        if detected_type == 'website' or (not elements['doi'] and not elements['isbn']):
+            url_match = re.search(self.apa_patterns['url_pattern'], ref_text)
+            if url_match:
+                elements['url'] = url_match.group(1)
         
         if format_type == "APA":
             year_match = re.search(self.apa_patterns['journal_year_in_parentheses'], ref_text)
@@ -266,84 +299,6 @@ class ReferenceParser:
             elements['extraction_confidence'] = 'medium'
         
         return elements
-
-    def parse_apa_reference(self, ref_text: str) -> Dict:
-        result = {
-            'format_valid': False,
-            'authors': None,
-            'year': None,
-            'title': None,
-            'journal': None,
-            'publisher': None,
-            'doi': None,
-            'errors': []
-        }
-        
-        # Extract year
-        year_match = re.search(self.apa_patterns['journal_year_in_parentheses'], ref_text)
-        if year_match:
-            result['year'] = year_match.group(1)
-        else:
-            result['errors'].append("Year not found in correct format (YYYY)")
-        
-        # Extract authors
-        author_match = re.search(self.apa_patterns['author_pattern'], ref_text)
-        if author_match:
-            result['authors'] = author_match.group(1).strip()
-        else:
-            result['errors'].append("Authors not found or incorrectly formatted")
-        
-        # Extract title
-        title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text)
-        if title_match:
-            result['title'] = title_match.group(1).strip()
-        else:
-            result['errors'].append("Title not found")
-        
-        if len(result['errors']) == 0:
-            result['format_valid'] = True
-        
-        return result
-
-    def parse_vancouver_reference(self, ref_text: str) -> Dict:
-        result = {
-            'format_valid': False,
-            'authors': None,
-            'year': None,
-            'title': None,
-            'journal': None,
-            'publisher': None,
-            'errors': []
-        }
-        
-        if not re.match(r'^\d+\.', ref_text):
-            result['errors'].append("Vancouver format should start with number followed by period")
-        
-        # Extract authors
-        author_match = re.search(self.vancouver_patterns['author_pattern_vancouver'], ref_text)
-        if author_match:
-            result['authors'] = author_match.group(1).strip()
-        else:
-            result['errors'].append("Authors not found")
-        
-        # Extract title
-        title_match = re.search(self.vancouver_patterns['journal_title_section'], ref_text)
-        if title_match:
-            result['title'] = title_match.group(1).strip()
-        else:
-            result['errors'].append("Title not found")
-        
-        # Extract year
-        year_match = re.search(r'(\d{4})', ref_text)
-        if year_match:
-            result['year'] = year_match.group(1)
-        else:
-            result['errors'].append("Year not found")
-        
-        if len(result['errors']) == 0:
-            result['format_valid'] = True
-        
-        return result
 
 class DatabaseSearcher:
     def __init__(self):
@@ -856,6 +811,7 @@ class ReferenceVerifier:
         
         ref_type = elements.get('reference_type', 'journal')
         
+        # --- Priority 1: Direct Identifiers (DOI, ISBN) ---
         # DOI check (common for journals, sometimes present elsewhere)
         if elements.get('doi'):
             doi_result = self.searcher.check_doi_and_verify_content(
@@ -873,37 +829,36 @@ class ReferenceVerifier:
                         'url': doi_result['doi_url'],
                         'description': 'DOI verified'
                     })
-        
-        # Type-specific verification
-        if ref_type == 'journal':
-            # Exact Title Search (useful for quick checks, but comprehensive is better)
-            if elements.get('title'):
-                title_result = self.searcher.search_by_exact_title(elements['title'])
-                results['search_details']['title_search'] = title_result
-                
-                if title_result['found']:
-                    results['title_found'] = True
-                    # Do not set any_found to True here if DOI already did. This is a secondary check.
-                    # This could be made stronger by checking if title_result's source matches DOI's.
-                    if title_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'Journal Title Match (Crossref)',
-                            'url': title_result['source_url'],
-                            'description': f"Title match (similarity: {title_result.get('similarity', 0):.1%})"
-                        })
+
+        # ISBN check (most direct for books)
+        if elements.get('isbn'):
+            isbn_result = self.searcher.search_books_isbn(elements['isbn'])
+            results['search_details']['isbn_search'] = isbn_result
             
-            # Comprehensive Journal Search (most robust for journals)
+            if isbn_result['found']:
+                results['isbn_found'] = True
+                results['any_found'] = True
+                if isbn_result.get('source_url'):
+                    results['verification_sources'].append({
+                        'type': 'ISBN Verification (Open Library)',
+                        'url': isbn_result['source_url'],
+                        'description': f"ISBN {isbn_result['isbn']} found in Open Library"
+                    })
+
+        # --- Priority 2: Comprehensive Searches (if direct identifiers not found or invalid) ---
+        # Only run comprehensive journal search if DOI didn't validate or wasn't present
+        if ref_type == 'journal' and not results['doi_valid']:
             comprehensive_result = self.searcher.search_comprehensive(
                 elements.get('authors', ''),
                 elements.get('title', ''),
                 elements.get('year', ''),
                 elements.get('journal', '')
             )
-            results['search_details']['comprehensive_journal'] = comprehensive_result # Renamed key
+            results['search_details']['comprehensive_journal'] = comprehensive_result
             
             if comprehensive_result['found']:
-                results['comprehensive_journal_found'] = True # Renamed field
-                results['any_found'] = True # This is a strong indicator
+                results['comprehensive_journal_found'] = True
+                results['any_found'] = True
                 if comprehensive_result.get('source_url'):
                     results['verification_sources'].append({
                         'type': 'Journal Comprehensive Search (Crossref)',
@@ -911,33 +866,18 @@ class ReferenceVerifier:
                         'description': f"Multi-element match (confidence: {comprehensive_result.get('match_score', 0):.1%})"
                     })
         
-        elif ref_type == 'book':
-            # ISBN check (most direct for books)
-            if elements.get('isbn'):
-                isbn_result = self.searcher.search_books_isbn(elements['isbn'])
-                results['search_details']['isbn_search'] = isbn_result
-                
-                if isbn_result['found']:
-                    results['isbn_found'] = True
-                    results['any_found'] = True
-                    if isbn_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'ISBN Verification (Open Library)',
-                            'url': isbn_result['source_url'],
-                            'description': f"ISBN {isbn_result['isbn']} found in Open Library"
-                        })
-            
-            # Comprehensive Book Search (if ISBN isn't available or fails)
+        # Only run comprehensive book search if ISBN didn't validate or wasn't present
+        elif ref_type == 'book' and not results['isbn_found']:
             book_result = self.searcher.search_books_comprehensive(
                 elements.get('title', ''),
                 elements.get('authors', ''),
                 elements.get('year', ''),
                 elements.get('publisher', '')
             )
-            results['search_details']['comprehensive_book'] = book_result # Renamed key
+            results['search_details']['comprehensive_book'] = book_result
             
             if book_result['found']:
-                results['comprehensive_book_found'] = True # Renamed field
+                results['comprehensive_book_found'] = True
                 results['any_found'] = True
                 if book_result.get('source_url'):
                     results['verification_sources'].append({
@@ -946,19 +886,22 @@ class ReferenceVerifier:
                         'description': f"Book match (confidence: {book_result.get('match_score', 0):.1%})"
                     })
         
-        elif ref_type == 'website':
-            if elements.get('url'):
-                website_result = self.searcher.check_website_accessibility(elements['url'])
-                results['search_details']['website_check'] = website_result
-                
-                if website_result['accessible']:
-                    results['website_accessible'] = True
+        # --- Priority 3: Website Accessibility (only if primary type is website, or as a last resort for others if no other verification succeeded) ---
+        # Only check URL if it's detected as a website, or if it's a book/journal and no other verification has worked yet.
+        if elements.get('url') and (ref_type == 'website' or not results['any_found']):
+            website_result = self.searcher.check_website_accessibility(elements['url'])
+            results['search_details']['website_check'] = website_result
+            
+            if website_result['accessible']:
+                results['website_accessible'] = True
+                # Only set any_found if this is the primary type or no other verification worked
+                if ref_type == 'website' or not results['any_found']:
                     results['any_found'] = True
-                    results['verification_sources'].append({
-                        'type': 'Website Accessibility',
-                        'url': website_result.get('final_url', elements['url']),
-                        'description': f"Website accessible - {website_result.get('page_title', 'No title')}"
-                    })
+                results['verification_sources'].append({
+                    'type': 'Website Accessibility',
+                    'url': website_result.get('final_url', elements['url']),
+                    'description': f"Website accessible - {website_result.get('page_title', 'No title')}"
+                })
         
         return results
 
@@ -1030,13 +973,17 @@ World Health Organization. (2021). COVID-19 pandemic response. Retrieved March 1
         
         with col_b:
             if st.button("📝 Load Sample Data", use_container_width=True):
-                sample_data = """Brown, S. L., Smith, M. A., et al. (2021). Adaptive Learning in Biomechanics: Effects on Student Engagement and Performance. Journal of Biomechanics Education, 3(2), 112-121. https://doi.org/10.1016/j.jobe.2021.112121
-Coombes, J., & Skinner, T. (2014). ESSA’s student manual for health, exercise and sport assessment. Elsevier
-Smith, J. A. (2020). Climate change impacts on marine ecosystems. Nature Climate Change, 10(5), 423-431. https://doi.org/10.1038/s41558-020-0789-5
-Brown, M. (2019). Machine learning in healthcare. MIT Press.
-Johnson, R. (2021). COVID-19 pandemic response. Retrieved March 15, 2023, from https://www.who.int/emergencies/diseases/novel-coronavirus-2019
-Fake, A. B. (2023). Non-existent study on imaginary topics. Made Up Press. ISBN: 978-1234567890
-Another, F. (2022). The art of making things up. Journal of Non-Existent Research, 1(1), 1-10. https://doi.org/10.9999/jner.2022.999999""" # Added more samples, including the user's examples
+                sample_data = """American College of Sports Medicine. (2022). ACSM’s guidelines for exercise testing and prescription (11th ed.). Wolters Kluwer.
+American Heart Association. (2024). Understanding blood pressure readings. American Heart Association. https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings
+Australian Government Department of Health and Aged Care. (2021, July 29). Body Mass Index (BMI) and Waist Measurement. Department of Health and Aged Care. https://www.health.gov.au/topics/overweight-and-obesity/bmi-and-waist
+Coombes, J., & Skinner, T. (2014). ESSA’s student manual for health, exercise and sport assessment. Elsevier.
+Health Direct. (2019). Resting heart rate. Healthdirect.gov.au; Healthdirect Australia. https://www.healthdirect.gov.au/resting-heart-rate
+Kumar, K. (2022, January 12). What Is a Good Resting Heart Rate by Age? MedicineNet. https://www.medicinenet.com/what_is_a_good_resting_heart_rate_by_age/article.htm
+Powden, C. J., Hoch, J. M., & Hoch, M. C. (2015b). Reliability and Minimal Detectable Change of the weight-bearing Lunge test: a Systematic Review. Manual Therapy, 20(4), 524–532. https://doi.org/10.1016/j.math.2015.01.004
+Ryan, C., Uthoff, A., McKenzie, C., & Cronin, J. (2022). Traditional and modified 5-0-5 change of direction test: Normative and reliability analysis. Strength & Conditioning Journal, 44(4), 22–37. https://doi.org/10.1519/SSC.0000000000000635
+Shrestha, M. (2022). Sit and Reach Test. Physiopedia. https://www.physio-pedia.com/Sit_and_Reach_Test
+Watson, S., & Nall, R. (2023, February 2). What Is the Waist-to-Hip Ratio? Healthline; Healthline Media. https://www.healthline.com/health/waist-to-hip-ratio
+Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www.topendsports.com/testing/tests/home-pushup.htm"""
                 st.session_state.sample_text = sample_data
         
         with st.expander("💡 Quick Tips"):
@@ -1172,7 +1119,10 @@ Another, F. (2022). The art of making things up. Journal of Non-Existent Researc
                                 st.write(f"• Journal database search: {search_details['comprehensive_journal'].get('reason', 'No matching journal publication found based on title, authors, year, and journal.')}")
                             elif 'comprehensive_journal' in search_details and search_details['comprehensive_journal'].get('found') and search_details['comprehensive_journal'].get('match_score', 0) < 0.7: # Example threshold
                                 st.write(f"• Journal database search: Found a weak match (score: {search_details['comprehensive_journal'].get('match_score', 0):.1%}) but not a strong one for all elements.")
-                        
+                            # Add a check if URL was present but not used for verification (e.g., if it was a generic website URL for a journal)
+                            if elements['url'] and not results['website_accessible'] and not results['doi_valid'] and not results['comprehensive_journal_found']:
+                                st.write(f"• Note: A URL was found ({elements['url']}) but it did not lead to a verified journal entry and was not treated as a primary website source for this journal reference.")
+
                         elif ref_type == 'book':
                             if 'isbn_search' in search_details and not search_details['isbn_search'].get('found'):
                                 st.write(f"• ISBN check: {search_details['isbn_search'].get('reason', 'ISBN not found in Open Library.')}")
@@ -1180,6 +1130,9 @@ Another, F. (2022). The art of making things up. Journal of Non-Existent Researc
                                 st.write(f"• Book database search: {search_details['comprehensive_book'].get('reason', 'No matching book found based on title, authors, year, and publisher.')}")
                             elif 'comprehensive_book' in search_details and search_details['comprehensive_book'].get('found') and search_details['comprehensive_book'].get('match_score', 0) < 0.7: # Example threshold
                                 st.write(f"• Book database search: Found a weak match (score: {search_details['comprehensive_book'].get('match_score', 0):.1%}) but not a strong one for all elements.")
+                            # Add a check if URL was present but not used for verification
+                            if elements['url'] and not results['website_accessible'] and not results['isbn_found'] and not results['comprehensive_book_found']:
+                                st.write(f"• Note: A URL was found ({elements['url']}) but it did not lead to a verified book entry and was not treated as a primary website source for this book reference.")
                         
                         elif ref_type == 'website':
                             if 'website_check' in search_details and not search_details['website_check'].get('accessible'):
