@@ -10,7 +10,7 @@ return {
                         'total_results': len(data['docs'])
                     }
                 
-                return {
+              return {
                     'found': False,
                     'reason': f'No good book matches found (best score: {best_score:.2f})',
                     'total_results': len(data['docs'])
