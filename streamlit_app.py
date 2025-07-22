@@ -326,17 +326,18 @@ class SimplifiedAuthenticityChecker:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-        self.timeout = 10
-        self.max_retries = 1  # Reduced for faster processing
+        self.timeout = 15  # Increased timeout for DOI verification
+        self.max_retries = 2  # Increased retries for network issues
 
     def check_authenticity(self, elements: Dict) -> Dict:
-        """Check authenticity with simplified approach"""
+        """Check authenticity with improved DOI handling and debugging"""
         result = {
             'is_authentic': False,
             'confidence': 'low',
             'sources_checked': [],
             'verification_details': [],
-            'check_errors': []
+            'check_errors': [],
+            'debug_info': []  # Add debugging information
         }
         
         if not elements or not isinstance(elements, dict):
@@ -345,67 +346,138 @@ class SimplifiedAuthenticityChecker:
         
         ref_type = elements.get('reference_type', 'unknown')
         
-        # Priority 1: Check DOI
-        if elements.get('doi'):
-            doi_result = self._check_doi_safe(elements['doi'])
+        # Priority 1: Check DOI (most reliable for journals)
+        doi = elements.get('doi')
+        if doi:
+            result['debug_info'].append(f"Found DOI: {doi}")
             result['sources_checked'].append('DOI Database')
+            
+            doi_result = self._check_doi_safe(doi)
+            result['debug_info'].append(f"DOI check result: {doi_result}")
             
             if doi_result.get('valid'):
                 result['is_authentic'] = True
                 result['confidence'] = 'high'
-                result['verification_details'].append(f"DOI {elements['doi']} verified")
+                result['verification_details'].append(f"DOI {doi} verified successfully")
+                if doi_result.get('resolved_url'):
+                    result['verification_details'].append(f"Resolves to: {doi_result['resolved_url']}")
                 return result
             else:
-                result['verification_details'].append(f"DOI check failed: {doi_result.get('reason', 'Invalid')}")
+                reason = doi_result.get('reason', 'Unknown error')
+                result['verification_details'].append(f"DOI verification failed: {reason}")
+                # Don't return here - try other verification methods
+        else:
+            result['debug_info'].append("No DOI found in elements")
         
-        # Priority 2: Check ISBN
-        if elements.get('isbn'):
-            isbn_result = self._check_isbn_safe(elements['isbn'])
+        # Priority 2: Check ISBN (for books)
+        isbn = elements.get('isbn')
+        if isbn:
+            result['debug_info'].append(f"Found ISBN: {isbn}")
             result['sources_checked'].append('ISBN Database')
+            
+            isbn_result = self._check_isbn_safe(isbn)
+            result['debug_info'].append(f"ISBN check result: {isbn_result}")
             
             if isbn_result.get('found'):
                 result['is_authentic'] = True
                 result['confidence'] = 'high'
-                result['verification_details'].append(f"ISBN {elements['isbn']} verified")
+                result['verification_details'].append(f"ISBN {isbn} verified in database")
                 return result
             else:
-                result['verification_details'].append("ISBN not found in database")
+                result['verification_details'].append("ISBN not found in Open Library database")
+        else:
+            result['debug_info'].append("No ISBN found in elements")
         
         # Priority 3: Check URL (for websites)
-        if ref_type == 'website' and elements.get('url'):
-            url_result = self._check_url_safe(elements['url'])
-            result['sources_checked'].append('URL Check')
-            
-            if url_result.get('accessible'):
-                result['is_authentic'] = True
-                result['confidence'] = 'medium'
-                result['verification_details'].append("Website URL accessible")
-                return result
+        if ref_type == 'website':
+            url = elements.get('url')
+            if url:
+                result['debug_info'].append(f"Found URL for website: {url}")
+                result['sources_checked'].append('URL Check')
+                
+                url_result = self._check_url_safe(url)
+                result['debug_info'].append(f"URL check result: {url_result}")
+                
+                if url_result.get('accessible'):
+                    result['is_authentic'] = True
+                    result['confidence'] = 'medium'
+                    result['verification_details'].append("Website URL is accessible")
+                    return result
+                else:
+                    reason = url_result.get('reason', 'Unknown error')
+                    result['verification_details'].append(f"URL not accessible: {reason}")
             else:
-                result['verification_details'].append(f"URL not accessible: {url_result.get('reason', 'Unknown')}")
+                result['debug_info'].append("No URL found for website reference")
         
-        # If no strong verification, mark as likely fake
+        # If we reach here, no verification method succeeded
         if not result['verification_details']:
-            result['verification_details'].append("No database verification succeeded")
+            result['verification_details'].append("No successful database verification found")
+        
+        # Add summary of what was attempted
+        attempted_methods = []
+        if doi:
+            attempted_methods.append("DOI verification")
+        if isbn:
+            attempted_methods.append("ISBN lookup")
+        if ref_type == 'website' and elements.get('url'):
+            attempted_methods.append("URL accessibility check")
+        
+        if attempted_methods:
+            result['verification_details'].append(f"Attempted: {', '.join(attempted_methods)}")
+        else:
+            result['verification_details'].append("No verification methods available (missing DOI/ISBN/URL)")
         
         return result
 
     def _check_doi_safe(self, doi: str) -> Dict:
-        """Safely check DOI"""
+        """Safely check DOI with improved verification"""
         if not doi or not isinstance(doi, str):
             return {'valid': False, 'reason': 'Invalid DOI'}
         
+        doi_clean = doi.strip()
+        if not doi_clean:
+            return {'valid': False, 'reason': 'Empty DOI'}
+        
+        # Validate DOI format first
+        if not re.match(r'^10\.\d+/', doi_clean):
+            return {'valid': False, 'reason': 'Invalid DOI format'}
+        
         try:
-            url = f"https://doi.org/{doi.strip()}"
+            url = f"https://doi.org/{doi_clean}"
+            
+            # Try HEAD request first (faster)
             response = self.session.head(url, timeout=self.timeout, allow_redirects=True)
+            
+            # DOI.org returns various success codes
+            if response.status_code in [200, 302, 303]:
+                return {
+                    'valid': True, 
+                    'reason': f'DOI verified (status: {response.status_code})',
+                    'resolved_url': response.url
+                }
+            
+            # If HEAD fails, try GET request
+            response = self.session.get(url, timeout=self.timeout, allow_redirects=True)
+            if response.status_code in [200, 302, 303]:
+                return {
+                    'valid': True, 
+                    'reason': f'DOI verified via GET (status: {response.status_code})',
+                    'resolved_url': response.url
+                }
+            
             return {
-                'valid': response.status_code == 200,
-                'reason': f"Status: {response.status_code}" if response.status_code != 200 else "Valid"
+                'valid': False, 
+                'reason': f'DOI does not resolve (status: {response.status_code})'
             }
+            
         except requests.exceptions.Timeout:
-            return {'valid': False, 'reason': 'Request timeout'}
+            return {'valid': False, 'reason': 'DOI verification timeout (network issue)'}
+        except requests.exceptions.ConnectionError:
+            return {'valid': False, 'reason': 'DOI verification connection failed'}
+        except requests.exceptions.RequestException as e:
+            return {'valid': False, 'reason': f'DOI verification network error: {str(e)[:50]}'}
         except Exception as e:
-            return {'valid': False, 'reason': f"Error: {str(e)[:50]}"}
+            return {'valid': False, 'reason': f'DOI verification error: {str(e)[:50]}'}
 
     def _check_isbn_safe(self, isbn: str) -> Dict:
         """Safely check ISBN"""
@@ -681,12 +753,35 @@ def main():
                         auth_check = result.get('authenticity_check', {})
                         sources = auth_check.get('sources_checked', [])
                         details = auth_check.get('verification_details', [])
+                        debug_info = auth_check.get('debug_info', [])
                         
                         if sources:
                             st.markdown(f"  • **Sources checked**: {', '.join(str(s) for s in sources)}")
+                        
                         for detail in details:
                             if detail:
                                 st.markdown(f"  • {detail}")
+                        
+                        # Show debug information to help troubleshoot
+                        if debug_info:
+                            with st.expander("🔍 Debug Information"):
+                                st.markdown("**Verification Debug Details:**")
+                                for debug in debug_info:
+                                    st.markdown(f"  • {debug}")
+                                
+                                st.markdown("**Possible Issues:**")
+                                st.markdown("  • Network connectivity problems")
+                                st.markdown("  • DOI server temporarily unavailable")
+                                st.markdown("  • Reference may actually be invalid")
+                                st.markdown("  • API rate limiting")
+                        
+                        # Suggest manual verification
+                        elements = result.get('extracted_elements', {})
+                        if elements.get('doi'):
+                            st.markdown("**🔍 Manual Verification Suggested:**")
+                            doi_url = f"https://doi.org/{elements['doi']}"
+                            st.markdown(f"  • Try manually: [{doi_url}]({doi_url})")
+                            st.markdown("  • If this link works, the reference is authentic but verification failed due to technical issues")
                     
                     elif status == 'processing_error':
                         st.error("🐛 **Processing Error**")
