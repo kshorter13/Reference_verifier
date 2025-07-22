@@ -557,15 +557,14 @@ class DatabaseSearcher:
                 title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
                 if title_similarity < self.similarity_threshold:
                     validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
-                composite_score += title_similarity * 0.4
+                composite_score += title_similarity * 0.5 # New weight: 0.5 (50%)
 
-            # --- Author Match (30% weight) ---
+            # --- Author Match (15% weight) ---
             parsed_expected_authors = []
-            # Improved splitting for expected authors
             raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', expected_authors)
             for raw_part in raw_expected_author_parts:
                 cleaned_part = raw_part.strip()
-                if cleaned_part: # Ensure it's not an empty string
+                if cleaned_part:
                     parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
                     if parsed_author:
                         parsed_expected_authors.append(parsed_author)
@@ -578,33 +577,11 @@ class DatabaseSearcher:
                 if surname:
                     parsed_actual_authors.append({'surname': surname, 'initials': initials})
 
-            author_score = 0.0
-            if parsed_expected_authors and parsed_actual_authors:
-                matched_surnames = 0
-                matched_initials_bonus_score = 0.0
-                
-                actual_surnames_set = {a['surname'] for a in parsed_actual_authors}
-                actual_initials_map = {a['surname']: a['initials'] for a in parsed_actual_authors if a['initials']}
+            author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_actual_authors)
 
-                for exp_author in parsed_expected_authors:
-                    exp_surname = exp_author['surname']
-                    exp_initials = exp_author['initials']
-
-                    if exp_surname in actual_surnames_set:
-                        matched_surnames += 1
-                        if exp_initials and exp_surname in actual_initials_map and exp_initials == actual_initials_map[exp_surname]:
-                            matched_initials_bonus_score += 0.5 # Each initial match adds 0.5 to a potential bonus
-
-                if parsed_expected_authors:
-                    author_score = matched_surnames / len(parsed_expected_authors)
-                
-                # Add a small, capped bonus for initials match
-                author_score += (matched_initials_bonus_score / len(parsed_expected_authors)) * 0.1 # Max 0.05 bonus
-                author_score = min(author_score, 1.0) # Cap score at 1.0
-
-                if author_score < self.similarity_threshold: # Check overall author score against threshold
-                     validation_errors.append(f"Author mismatch (expected: {expected_authors}, actual: {actual_authors_list}, score: {author_score:.1%})")
-            composite_score += author_score * 0.3
+            if author_score < self.similarity_threshold:
+                 validation_errors.append(f"Author mismatch (expected: {expected_authors}, actual: {actual_authors_list}, score: {author_score:.1%})")
+            composite_score += author_score * 0.15 # New weight: 0.15 (15%)
 
 
             journal_sim = 0.0
@@ -612,7 +589,7 @@ class DatabaseSearcher:
                 journal_sim = self._calculate_title_similarity(expected_journal.lower(), actual_journal.lower())
                 if journal_sim < self.similarity_threshold:
                     validation_errors.append(f"Journal mismatch (expected: '{expected_journal}', actual: '{actual_journal}', similarity: {journal_sim:.1%})")
-                composite_score += journal_sim * 0.2
+                composite_score += journal_sim * 0.25 # New weight: 0.25 (25%)
             
             year_match_score = 0.0
             if expected_year and actual_year:
@@ -622,7 +599,7 @@ class DatabaseSearcher:
                     year_match_score = 0.5
                 if year_match_score < 1.0 and expected_year != actual_year:
                      validation_errors.append(f"Year mismatch (expected: {expected_year}, actual: {actual_year})")
-                composite_score += year_match_score * 0.1
+                composite_score += year_match_score * 0.1 # Weight: 0.1 (10%)
 
             if validation_errors:
                 return {
@@ -729,7 +706,6 @@ class DatabaseSearcher:
             
             # Use parsed authors for query parts
             parsed_authors_for_query = []
-            # Improved splitting for query authors
             raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
             for raw_part in raw_query_author_parts:
                 cleaned_part = raw_part.strip()
@@ -858,25 +834,33 @@ class DatabaseSearcher:
             efetch_response = self._make_request_with_retries('get', efetch_url, params=efetch_params)
             efetch_response.raise_for_status()
             
-            # Parse XML response (simplified parsing for key elements)
-            # This is a basic XML parsing. For robust parsing, consider a dedicated XML library.
             xml_text = efetch_response.text
             
             best_match = None
             best_score = 0.0
             
-            # Simple regex to extract article details from XML
             articles = re.findall(r'<PubmedArticle>(.*?)</PubmedArticle>', xml_text, re.DOTALL)
             
             for article_xml in articles:
                 item_title = re.search(r'<ArticleTitle>(.*?)</ArticleTitle>', article_xml, re.DOTALL)
                 item_title = item_title.group(1).strip() if item_title else ''
 
-                item_authors_raw = re.findall(r'<AuthorList.*?>(.*?)</AuthorList>', article_xml, re.DOTALL)
-                item_authors = []
-                if item_authors_raw:
-                    item_authors_families = re.findall(r'<LastName>(.*?)</LastName>', item_authors_raw[0])
-                    item_authors = [f.strip() for f in item_authors_families]
+                # Parse authors from PubMed XML into surname/initials dicts
+                parsed_item_authors = []
+                author_list_match = re.search(r'<AuthorList.*?>(.*?)</AuthorList>', article_xml, re.DOTALL)
+                if author_list_match:
+                    author_tags = re.findall(r'<Author.*?>(.*?)</Author>', author_list_match.group(1), re.DOTALL)
+                    for author_tag in author_tags:
+                        surname = re.search(r'<LastName>(.*?)</LastName>', author_tag)
+                        surname = surname.group(1).strip() if surname else ''
+                        fore_name = re.search(r'<ForeName>(.*?)</ForeName>', author_tag)
+                        fore_name = fore_name.group(1).strip() if fore_name else ''
+                        initials_tag = re.search(r'<Initials>(.*?)</Initials>', author_tag)
+                        initials_val = initials_tag.group(1).strip() if initials_tag else ''
+
+                        if surname:
+                            initials_for_author = initials_val if initials_val else ''.join(re.findall(r'[A-Za-z]', fore_name)).lower()
+                            parsed_item_authors.append({'surname': surname.lower(), 'initials': initials_for_author})
 
                 item_journal = re.search(r'<Journal><Title>(.*?)</Title>', article_xml, re.DOTALL)
                 item_journal = item_journal.group(1).strip() if item_journal else ''
@@ -898,7 +882,7 @@ class DatabaseSearcher:
                             parsed_expected_authors.append(parsed_author)
 
                 score = self._calculate_pubmed_match_score(
-                    item_title, item_authors, item_journal, item_year,
+                    item_title, parsed_item_authors, item_journal, item_year, # Pass parsed_item_authors
                     title, authors, year, parsed_expected_authors
                 )
 
@@ -906,7 +890,7 @@ class DatabaseSearcher:
                     best_score = score
                     best_match = {
                         'title': item_title,
-                        'authors': item_authors,
+                        'authors': [a['surname'] for a in parsed_item_authors], # Store just surnames for display
                         'journal': item_journal,
                         'year': item_year,
                         'doi': item_doi,
@@ -946,7 +930,6 @@ class DatabaseSearcher:
             if title:
                 query_parts.append(title)
             
-            # Semantic Scholar API typically prefers space-separated author names
             parsed_authors_for_query = []
             raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
             for raw_part in raw_query_author_parts:
@@ -982,7 +965,15 @@ class DatabaseSearcher:
             
             for item in data['data']:
                 item_title = item.get('title', '')
-                item_authors = [a.get('name', '') for a in item.get('authors', [])]
+                
+                # Parse Semantic Scholar authors into surname/initials format
+                parsed_item_authors = []
+                for author_data_ss in item.get('authors', []):
+                    full_name_ss = author_data_ss.get('name', '')
+                    parsed_author_ss = ReferenceParser()._extract_author_parts(full_name_ss)
+                    if parsed_author_ss:
+                        parsed_item_authors.append(parsed_author_ss)
+
                 item_venue = item.get('venue', '') # Journal/conference name
                 item_year = str(item.get('year', ''))
                 item_doi = item.get('externalIds', {}).get('DOI', '')
@@ -998,7 +989,7 @@ class DatabaseSearcher:
                             parsed_expected_authors.append(parsed_author)
 
                 score = self._calculate_semantic_scholar_match_score(
-                    item_title, item_authors, item_venue, item_year,
+                    item_title, parsed_item_authors, item_venue, item_year, # Pass parsed_item_authors
                     title, authors, year, parsed_expected_authors
                 )
 
@@ -1006,7 +997,7 @@ class DatabaseSearcher:
                     best_score = score
                     best_match = {
                         'title': item_title,
-                        'authors': item_authors,
+                        'authors': [a.get('name', '') for a in item.get('authors', [])], # Store original full names for display
                         'journal': item_venue,
                         'year': item_year,
                         'doi': item_doi,
@@ -1306,16 +1297,16 @@ class DatabaseSearcher:
         author_score += (initial_bonus / len(parsed_expected_authors)) * 0.1 # Small bonus for initials
         return min(author_score, 1.0) # Cap score at 1.0
 
-    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str, parsed_expected_authors: List[Dict]) -> float:
+    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors_str: str, target_year: str, target_journal: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
         
         title_sim = 0.0
         if 'title' in item and item['title'] and target_title:
             item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
             title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.4 # Title weight 40%
+            score += title_sim * 0.5 # New weight: 0.5 (50%)
         
-        # --- Author Matching (30% weight) ---
+        # --- Author Matching (15% weight) ---
         parsed_item_authors = []
         if 'author' in item and item['author']:
             for author_data in item['author']:
@@ -1326,7 +1317,7 @@ class DatabaseSearcher:
                     parsed_item_authors.append({'surname': surname, 'initials': initials})
 
         author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.3 # Author weight 30%
+        score += author_score * 0.15 # New weight: 0.15 (15%)
         
         year_match_score = 0.0
         if target_year:
@@ -1340,7 +1331,7 @@ class DatabaseSearcher:
                 year_match_score = 1.0
             elif item_year and abs(int(item_year) - int(target_year)) <= 2:
                 year_match_score = 0.5
-            score += year_match_score * 0.1 # Year weight 10%
+            score += year_match_score * 0.1 # Weight: 0.1 (10%)
             
         journal_match_score = 0.0
         if target_journal and 'container-title' in item and item['container-title']:
@@ -1351,29 +1342,23 @@ class DatabaseSearcher:
             for ij in item_journal_titles:
                 max_journal_sim = max(max_journal_sim, self._calculate_title_similarity(target_journal_lower, ij))
             
-            journal_match_score = max_journal_sim * 0.15 # Journal weight 15% (increased slightly from 10%)
+            journal_match_score = max_journal_sim * 0.25 # New weight: 0.25 (25%)
             score += journal_match_score
             
         return score
 
-    def _calculate_pubmed_match_score(self, item_title: str, item_authors: List[str], item_journal: str, item_year: str,
+    def _calculate_pubmed_match_score(self, item_title: str, parsed_item_authors: List[Dict], item_journal: str, item_year: str,
                                       target_title: str, target_authors_str: str, target_year: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
 
         title_sim = 0.0
         if item_title and target_title:
             title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.4
+            score += title_sim * 0.5 # New weight: 0.5 (50%)
 
-        # --- Author Matching (30% weight) ---
-        parsed_item_authors = []
-        for author_name_str in item_authors:
-            parsed_author = ReferenceParser()._extract_author_parts(author_name_str)
-            if parsed_author:
-                parsed_item_authors.append(parsed_author)
-        
+        # --- Author Matching (15% weight) ---
         author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.3
+        score += author_score * 0.15 # New weight: 0.15 (15%)
 
         year_match_score = 0.0
         if target_year and item_year:
@@ -1381,33 +1366,27 @@ class DatabaseSearcher:
                 year_match_score = 1.0
             elif abs(int(item_year) - int(target_year)) <= 2:
                 year_match_score = 0.5
-            score += year_match_score * 0.1
+            score += year_match_score * 0.1 # Weight: 0.1 (10%)
 
         journal_match_score = 0.0
         if target_journal and item_journal:
             journal_match_score = self._calculate_title_similarity(target_journal, item_journal)
-            score += journal_match_score * 0.15
+            score += journal_match_score * 0.25 # New weight: 0.25 (25%)
         
         return score
 
-    def _calculate_semantic_scholar_match_score(self, item_title: str, item_authors: List[str], item_venue: str, item_year: str,
+    def _calculate_semantic_scholar_match_score(self, item_title: str, parsed_item_authors: List[Dict], item_venue: str, item_year: str,
                                                 target_title: str, target_authors_str: str, target_year: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
 
         title_sim = 0.0
         if item_title and target_title:
             title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.4
+            score += title_sim * 0.5 # New weight: 0.5 (50%)
 
-        # --- Author Matching (30% weight) ---
-        parsed_item_authors = []
-        for author_name_str in item_authors:
-            parsed_author = ReferenceParser()._extract_author_parts(author_name_str)
-            if parsed_author:
-                parsed_item_authors.append(parsed_author)
-        
+        # --- Author Matching (15% weight) ---
         author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.3
+        score += author_score * 0.15 # New weight: 0.15 (15%)
 
         year_match_score = 0.0
         if target_year and item_year:
@@ -1415,12 +1394,12 @@ class DatabaseSearcher:
                 year_match_score = 1.0
             elif abs(int(item_year) - int(target_year)) <= 2:
                 year_match_score = 0.5
-            score += year_match_score * 0.1
+            score += year_match_score * 0.1 # Weight: 0.1 (10%)
 
         journal_match_score = 0.0
-        if target_venue and item_venue:
-            journal_match_score = self._calculate_title_similarity(target_venue, item_venue)
-            score += journal_match_score * 0.15
+        if target_journal and item_venue: # Corrected: target_journal instead of target_venue
+            journal_match_score = self._calculate_title_similarity(target_journal, item_venue)
+            score += journal_match_score * 0.25 # New weight: 0.25 (25%)
         
         return score
 
