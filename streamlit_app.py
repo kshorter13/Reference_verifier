@@ -561,10 +561,14 @@ class DatabaseSearcher:
 
             # --- Author Match (30% weight) ---
             parsed_expected_authors = []
-            for a in re.split(r'[,&]', expected_authors):
-                parsed_author = ReferenceParser()._extract_author_parts(a) # Use ReferenceParser's method
-                if parsed_author:
-                    parsed_expected_authors.append(parsed_author)
+            # Improved splitting for expected authors
+            raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', expected_authors)
+            for raw_part in raw_expected_author_parts:
+                cleaned_part = raw_part.strip()
+                if cleaned_part: # Ensure it's not an empty string
+                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                    if parsed_author:
+                        parsed_expected_authors.append(parsed_author)
 
             parsed_actual_authors = []
             for author_data in work.get('author', []):
@@ -715,10 +719,14 @@ class DatabaseSearcher:
             
             # Use parsed authors for query parts
             parsed_authors_for_query = []
-            for a in re.split(r'[,&]', authors):
-                parsed_author = ReferenceParser()._extract_author_parts(a)
-                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
-                    parsed_authors_for_query.append(parsed_author['surname'])
+            # Improved splitting for query authors
+            raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+            for raw_part in raw_query_author_parts:
+                cleaned_part = raw_part.strip()
+                if cleaned_part:
+                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                    if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                        parsed_authors_for_query.append(parsed_author['surname'])
             if parsed_authors_for_query:
                 query_parts.extend(parsed_authors_for_query[:2]) # Add up to 2 surnames to query
 
@@ -824,10 +832,13 @@ class DatabaseSearcher:
                 query_parts.extend(title_words)
             
             parsed_authors_for_query = []
-            for a in re.split(r'[,&]', authors):
-                parsed_author = ReferenceParser()._extract_author_parts(a)
-                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
-                    parsed_authors_for_query.append(parsed_author['surname'])
+            raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+            for raw_part in raw_query_author_parts:
+                cleaned_part = raw_part.strip()
+                if cleaned_part:
+                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                    if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                        parsed_authors_for_query.append(parsed_author['surname'])
             if parsed_authors_for_query:
                 query_parts.extend(parsed_authors_for_query[:2])
 
@@ -878,10 +889,13 @@ class DatabaseSearcher:
                 query_parts.append(f"intitle:{title}")
             
             parsed_authors_for_query = []
-            for a in re.split(r'[,&]', authors):
-                parsed_author = ReferenceParser()._extract_author_parts(a)
-                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
-                    parsed_authors_for_query.append(parsed_author['surname'])
+            raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+            for raw_part in raw_query_author_parts:
+                cleaned_part = raw_part.strip()
+                if cleaned_part:
+                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                    if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                        parsed_authors_for_query.append(parsed_author['surname'])
             if parsed_authors_for_query:
                 query_parts.append(f"inauthor:{' '.join(parsed_authors_for_query)}")
 
@@ -977,8 +991,12 @@ class DatabaseSearcher:
             }
 
     def _calculate_title_similarity(self, title1: str, title2: str) -> float:
-        words1 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title1.lower()))
-        words2 = set(re.findall(r'\b[a-zA-Z]{3,}\b', title2.lower()))
+        # Normalize by removing non-alphanumeric characters and converting to lowercase
+        normalized_title1 = re.sub(r'[^a-zA-Z0-9\s]', '', title1).lower()
+        normalized_title2 = re.sub(r'[^a-zA-Z0-9\s]', '', title2).lower()
+
+        words1 = set(normalized_title1.split())
+        words2 = set(normalized_title2.split())
         
         if not words1 or not words2:
             return 0.0
@@ -999,10 +1017,13 @@ class DatabaseSearcher:
         
         # --- Author Matching (30% weight) ---
         parsed_target_authors = []
-        for a in re.split(r'and|&|,', target_authors):
-            parsed_author = ReferenceParser()._extract_author_parts(a)
-            if parsed_author:
-                parsed_target_authors.append(parsed_author)
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_expected_authors.append(parsed_author)
 
         parsed_item_authors = []
         if 'author' in item and item['author']:
@@ -1021,7 +1042,7 @@ class DatabaseSearcher:
             item_surnames_set = {a['surname'] for a in parsed_item_authors}
             item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
 
-            for target_author_part in parsed_target_authors:
+            for target_author_part in parsed_expected_authors:
                 target_surname = target_author_part['surname']
                 target_initials = target_author_part['initials']
 
@@ -1079,10 +1100,13 @@ class DatabaseSearcher:
         
         # --- Author Matching (30% weight) ---
         parsed_target_authors = []
-        for a in re.split(r'and|&|,', target_authors):
-            parsed_author = ReferenceParser()._extract_author_parts(a)
-            if parsed_author:
-                parsed_target_authors.append(parsed_author)
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_target_authors.append(parsed_author)
 
         parsed_item_authors = []
         if 'author_name' in item and item['author_name']:
@@ -1099,7 +1123,7 @@ class DatabaseSearcher:
             item_surnames_set = {a['surname'] for a in parsed_item_authors}
             item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
 
-            for target_author_part in parsed_target_authors:
+            for target_author_part in parsed_expected_authors:
                 target_surname = target_author_part['surname']
                 target_initials = target_author_part['initials']
 
@@ -1149,10 +1173,13 @@ class DatabaseSearcher:
 
         # --- Author Matching (30% weight) ---
         parsed_target_authors = []
-        for a in re.split(r'and|&|,', target_authors):
-            parsed_author = ReferenceParser()._extract_author_parts(a)
-            if parsed_author:
-                parsed_target_authors.append(parsed_author)
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_target_authors.append(parsed_author)
 
         parsed_item_authors = []
         if item_authors: # item_authors from Google Books API is already a list of strings
@@ -1169,7 +1196,7 @@ class DatabaseSearcher:
             item_surnames_set = {a['surname'] for a in parsed_item_authors}
             item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
 
-            for target_author_part in parsed_target_authors:
+            for target_author_part in parsed_expected_authors:
                 target_surname = target_author_part['surname']
                 target_initials = target_author_part['initials']
 
