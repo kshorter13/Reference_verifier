@@ -23,11 +23,10 @@ class ReferenceParser:
         self.apa_patterns = {
             'journal_year_in_parentheses': r'\((\d{4}[a-z]?)\)',
             'journal_title_after_year': r'\)\.\s*([^.]+)\.',
-            # Removed the problematic 'journal_info' pattern
             'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(\d+(?:-\d+)?)',
             'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier|MIT Press|Human Kinetics)[^.]*)',
             'doi_pattern': r'https?://doi\.org/([^\s]+)',
-            'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))',
+            'author_pattern': r'^([^()]+?)(?:\\s*\\(\\d{4}\\))', # Extracts authors before year
             'isbn_pattern': r'ISBN:?\s*([\d-]+)',
             'url_pattern': r'(https?://[^\s]+)',
             'website_access_date': r'(?:Retrieved|Accessed)\\s+([^,]+)'
@@ -67,20 +66,16 @@ class ReferenceParser:
     def detect_reference_type(self, ref_text: str) -> str:
         ref_lower = ref_text.lower()
 
-        # 1. Highest priority: DOI -> Journal
         if re.search(self.apa_patterns['doi_pattern'], ref_text):
             return 'journal'
 
-        # 2. Next priority: ISBN -> Book
         if re.search(self.apa_patterns['isbn_pattern'], ref_text):
             return 'book'
 
-        # 3. Strong Website indicator: URL + Access Date/Retrieved phrase
         if re.search(self.apa_patterns['url_pattern'], ref_text) and \
            re.search(self.apa_patterns['website_access_date'], ref_text):
             return 'website'
         
-        # 4. Fallback to scoring for less clear cases
         type_scores = {'journal': 0, 'book': 0, 'website': 0}
         
         for ref_type, patterns in self.type_indicators.items():
@@ -88,7 +83,6 @@ class ReferenceParser:
                 if re.search(pattern, ref_lower):
                     type_scores[ref_type] += 1
         
-        # Boost scores for explicit keywords
         if re.search(r'\b(edition|ed\.)\b', ref_lower) or \
            re.search(r'\b(manual|handbook|textbook|guidelines)\b', ref_lower) or \
            re.search(r'\b(vol\.|volume|chapter)\b', ref_lower):
@@ -101,7 +95,6 @@ class ReferenceParser:
             if re.search(r'\b(wolters kluwer|elsevier|mit press|university press|human kinetics)\b', ref_lower):
                 type_scores['book'] += 1.0
 
-        # Final decision based on scores
         if any(score > 0 for score in type_scores.values()):
             max_score = max(type_scores.values())
             if type_scores['book'] == max_score and max_score > 0:
@@ -140,7 +133,7 @@ class ReferenceParser:
             has_title = bool(re.search(self.apa_patterns['journal_title_after_year'], ref_text))
             
             if detected_type == 'journal':
-                has_journal = bool(re.search(r'[\.,]\s*([A-Z][^,\d]*[A-Za-z\s&]+?)(?:,?\s*\d+\(|\.)', ref_text)) # More robust journal check for structure
+                has_journal = bool(re.search(r'[\.,]\s*([A-Z][^,\d]*[A-Za-z\s&]+?)(?:,?\s*\d+\(|\.)', ref_text))
                 has_numbers = bool(re.search(self.apa_patterns['volume_pages'], ref_text))
                 has_doi_in_text = bool(re.search(self.apa_patterns['doi_pattern'], ref_text))
                 
@@ -211,6 +204,33 @@ class ReferenceParser:
         
         return result
 
+    def _extract_author_parts(self, author_string: str) -> Optional[Dict]:
+        """
+        Extracts surname and initials from an author string.
+        Handles "Lastname, F. M." and "F. M. Lastname" patterns.
+        Returns {'surname': '...', 'initials': '...'} or None.
+        """
+        author_string = author_string.strip()
+        if not author_string:
+            return None
+
+        # Try "Lastname, F. M." pattern
+        match_comma = re.match(r'([^,]+),\s*(.*)', author_string)
+        if match_comma:
+            surname = match_comma.group(1).strip()
+            initials_part = match_comma.group(2).strip()
+            initials = ''.join(re.findall(r'[A-Za-z]', initials_part)).lower()
+            return {'surname': surname.lower(), 'initials': initials}
+
+        # Try "F. M. Lastname" pattern (or just "Lastname")
+        parts = author_string.split()
+        if parts:
+            surname = parts[-1].strip()
+            initials = ''.join(re.findall(r'[A-Za-z]', ' '.join(parts[:-1]))).lower()
+            return {'surname': surname.lower(), 'initials': initials}
+        
+        return None
+
     def extract_reference_elements(self, ref_text: str, format_type: str, ref_type: str = None) -> Dict:
         elements = {
             'authors': None,
@@ -257,7 +277,6 @@ class ReferenceParser:
                     elements['title'] = title_match.group(1).strip()
                     title_end_pos = title_match.end()
 
-                # Robust Journal Extraction for APA: Text between article title and volume/pages
                 volume_pages_match = re.search(self.apa_patterns['volume_pages'], ref_text)
                 
                 if title_end_pos != -1 and volume_pages_match:
@@ -266,7 +285,6 @@ class ReferenceParser:
                     
                     potential_journal_text = ref_text[journal_start_index:journal_end_index].strip()
                     
-                    # Clean up: remove leading period/space, and trailing comma/space
                     if potential_journal_text.startswith('. '):
                         potential_journal_text = potential_journal_text[2:]
                     elif potential_journal_text.startswith('.'):
@@ -276,9 +294,8 @@ class ReferenceParser:
                         potential_journal_text = potential_journal_text[:-1].strip()
                     
                     elements['journal'] = potential_journal_text.strip()
-                elif title_end_pos != -1: # Fallback if volume/pages not found but title is
+                elif title_end_pos != -1:
                     remaining_text = ref_text[title_end_pos:].strip()
-                    # Try to find a journal-like string or simply take content before DOI/URL
                     doi_url_match = re.search(r'(https?://doi\.org/|https?://)', remaining_text)
                     if doi_url_match:
                         elements['journal'] = remaining_text[:doi_url_match.start()].replace('.', '').strip().rstrip(',')
@@ -286,7 +303,7 @@ class ReferenceParser:
                         elements['journal'] = remaining_text.replace('.', '').strip().rstrip(',')
 
             elif detected_type == 'book':
-                title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text) # This pattern is generic enough for book title
+                title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text)
                 if title_match:
                     elements['title'] = title_match.group(1).strip()
                 
@@ -295,7 +312,7 @@ class ReferenceParser:
                     elements['publisher'] = publisher_match.group(1).strip()
             
             elif detected_type == 'website':
-                title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text) # Generic for website title
+                title_match = re.search(self.apa_patterns['journal_title_after_year'], ref_text)
                 if title_match:
                     elements['title'] = title_match.group(1).strip()
                 access_match = re.search(self.apa_patterns['website_access_date'], ref_text)
@@ -328,7 +345,7 @@ class ReferenceParser:
         extracted_count = sum(1 for v in [elements['authors'], elements['year'], elements['title'], elements['journal'], elements['publisher'], elements['url']] if v)
         if extracted_count < 2:
             elements['extraction_confidence'] = 'low'
-        elif extracted_count < (len([f for f in [elements['authors'], elements['year'], elements['title'], elements['journal'], elements['publisher'], elements['url']] if f is not None]) / 2): # Check against non-None fields
+        elif extracted_count < (len([f for f in [elements['authors'], elements['year'], elements['title'], elements['journal'], elements['publisher'], elements['url']] if f is not None]) / 2):
             elements['extraction_confidence'] = 'medium'
         
         return elements
@@ -428,17 +445,49 @@ class DatabaseSearcher:
                     validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
                 composite_score += title_similarity * 0.4
 
-            author_match_score = 0.0
-            if expected_authors and actual_authors_list:
-                expected_surnames = [re.sub(r'[^\w\s]', '', a).strip().split()[-1].lower() for a in re.split(r'[,&]', expected_authors) if re.sub(r'[^\w\s]', '', a).strip()]
-                actual_surnames = [s.lower() for s in actual_authors_list]
+            # --- Author Match (30% weight) ---
+            parsed_expected_authors = []
+            for a in re.split(r'[,&]', expected_authors):
+                parsed_author = ReferenceParser()._extract_author_parts(a) # Use ReferenceParser's method
+                if parsed_author:
+                    parsed_expected_authors.append(parsed_author)
+
+            parsed_actual_authors = []
+            for author_data in work.get('author', []):
+                surname = author_data.get('family', '').lower()
+                given_name = author_data.get('given', '')
+                initials = ''.join(re.findall(r'[A-Za-z]', given_name)).lower()
+                if surname:
+                    parsed_actual_authors.append({'surname': surname, 'initials': initials})
+
+            author_score = 0.0
+            if parsed_expected_authors and parsed_actual_authors:
+                matched_surnames = 0
+                matched_initials_bonus_score = 0.0
                 
-                if expected_surnames:
-                    author_match_count = sum(1 for es in expected_surnames if es in actual_surnames)
-                    author_match_score = author_match_count / len(expected_surnames)
-                    if author_match_score < self.similarity_threshold:
-                        validation_errors.append(f"Author mismatch (expected: {expected_surnames}, actual: {actual_surnames}, matched: {author_match_count}/{len(expected_surnames)})")
-                composite_score += author_match_score * 0.3
+                actual_surnames_set = {a['surname'] for a in parsed_actual_authors}
+                actual_initials_map = {a['surname']: a['initials'] for a in parsed_actual_authors if a['initials']}
+
+                for exp_author in parsed_expected_authors:
+                    exp_surname = exp_author['surname']
+                    exp_initials = exp_author['initials']
+
+                    if exp_surname in actual_surnames_set:
+                        matched_surnames += 1
+                        if exp_initials and exp_surname in actual_initials_map and exp_initials == actual_initials_map[exp_surname]:
+                            matched_initials_bonus_score += 0.5 # Each initial match adds 0.5 to a potential bonus
+
+                if parsed_expected_authors:
+                    author_score = matched_surnames / len(parsed_expected_authors)
+                
+                # Add a small, capped bonus for initials match
+                author_score += (matched_initials_bonus_score / len(parsed_expected_authors)) * 0.1 # Max 0.05 bonus
+                author_score = min(author_score, 1.0) # Cap score at 1.0
+
+                if author_score < self.similarity_threshold: # Check overall author score against threshold
+                     validation_errors.append(f"Author mismatch (expected: {expected_authors}, actual: {actual_authors_list}, score: {author_score:.1%})")
+            composite_score += author_score * 0.3
+
 
             journal_sim = 0.0
             if expected_journal and actual_journal:
@@ -550,15 +599,15 @@ class DatabaseSearcher:
                 title_words = re.findall(r'\b[a-zA-Z]{4,}\b', title)[:4]
                 query_parts.extend(title_words)
             
-            if authors:
-                author_parts = re.split(r'[,&]', authors)[:2]
-                for author in author_parts:
-                    author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                    if author_clean:
-                        surname = author_clean.split()[-1]
-                        if len(surname) > 2:
-                            query_parts.append(surname)
-            
+            # Use parsed authors for query parts
+            parsed_authors_for_query = []
+            for a in re.split(r'[,&]', authors):
+                parsed_author = ReferenceParser()._extract_author_parts(a)
+                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                    parsed_authors_for_query.append(parsed_author['surname'])
+            if parsed_authors_for_query:
+                query_parts.extend(parsed_authors_for_query[:2]) # Add up to 2 surnames to query
+
             if not query_parts:
                 return {'found': False, 'reason': 'Insufficient search terms'}
             
@@ -660,14 +709,14 @@ class DatabaseSearcher:
                 title_words = re.findall(r'\b[a-zA-Z]{3,}\b', title)[:5]
                 query_parts.extend(title_words)
             
-            if authors:
-                author_parts = re.split(r'[,&]', authors)[:2]
-                for author in author_parts:
-                    author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                    if author_clean:
-                        name_parts = author_clean.split()
-                        query_parts.extend([part for part in name_parts if len(part) > 2])
-            
+            parsed_authors_for_query = []
+            for a in re.split(r'[,&]', authors):
+                parsed_author = ReferenceParser()._extract_author_parts(a)
+                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                    parsed_authors_for_query.append(parsed_author['surname'])
+            if parsed_authors_for_query:
+                query_parts.extend(parsed_authors_for_query[:2])
+
             if not query_parts:
                 return {'found': False, 'reason': 'Insufficient search terms for Open Library book search'}
             
@@ -713,10 +762,15 @@ class DatabaseSearcher:
             query_parts = []
             if title:
                 query_parts.append(f"intitle:{title}")
-            if authors:
-                author_surnames = [re.sub(r'[^\w\s]', '', a).strip().split()[-1] for a in re.split(r'[,&]', authors) if re.sub(r'[^\w\s]', '', a).strip()]
-                if author_surnames:
-                    query_parts.append(f"inauthor:{' '.join(author_surnames)}")
+            
+            parsed_authors_for_query = []
+            for a in re.split(r'[,&]', authors):
+                parsed_author = ReferenceParser()._extract_author_parts(a)
+                if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
+                    parsed_authors_for_query.append(parsed_author['surname'])
+            if parsed_authors_for_query:
+                query_parts.append(f"inauthor:{' '.join(parsed_authors_for_query)}")
+
             if publisher:
                 query_parts.append(f"inpublisher:{publisher}")
             if year:
@@ -751,7 +805,7 @@ class DatabaseSearcher:
 
                     score = self._calculate_google_book_match_score(
                         item_title, item_authors, item_published_date, item_publisher,
-                        target_title, authors, year, publisher
+                        title, authors, year, publisher
                     )
 
                     if score > best_score:
@@ -827,29 +881,50 @@ class DatabaseSearcher:
         if 'title' in item and item['title'] and target_title:
             item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
             title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.5
+            score += title_sim * 0.4 # Title weight 40%
         
-        author_score = 0.0
-        if 'author' in item and item['author'] and target_authors:
-            item_authors = []
-            for author in item['author']:
-                if 'family' in author:
-                    item_authors.append(author['family'].lower())
-            
-            target_surnames = []
-            for author in re.split(r'and|&|,', target_authors):
-                author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                if author_clean:
-                    name_parts = author_clean.split()
-                    if name_parts:
-                        surname = name_parts[-1].lower()
-                        if len(surname) > 2:
-                            target_surnames.append(surname)
-            
-            if item_authors and target_surnames:
-                common_authors = set(item_authors).intersection(set(target_surnames))
-                author_score = len(common_authors) / max(len(target_surnames), len(item_authors), 1)
-                score += author_score * 0.25
+        # --- Author Matching (30% weight) ---
+        parsed_target_authors = []
+        for a in re.split(r'and|&|,', target_authors):
+            parsed_author = ReferenceParser()._extract_author_parts(a)
+            if parsed_author:
+                parsed_target_authors.append(parsed_author)
+
+        parsed_item_authors = []
+        if 'author' in item and item['author']:
+            for author_data in item['author']:
+                surname = author_data.get('family', '').lower()
+                given_name = author_data.get('given', '')
+                initials = ''.join(re.findall(r'[A-Za-z]', given_name)).lower()
+                if surname:
+                    parsed_item_authors.append({'surname': surname, 'initials': initials})
+
+        author_match_score = 0.0
+        if parsed_target_authors and parsed_item_authors:
+            matched_surnames = 0
+            initial_bonus = 0.0 # Total bonus from initials
+
+            item_surnames_set = {a['surname'] for a in parsed_item_authors}
+            item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
+
+            for target_author_part in parsed_target_authors:
+                target_surname = target_author_part['surname']
+                target_initials = target_author_part['initials']
+
+                if target_surname in item_surnames_set:
+                    matched_surnames += 1
+                    # Add bonus for matching initials if surname is already matched
+                    if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
+                        initial_bonus += 0.5 # Each matching initial set adds 0.5 to a potential bonus
+
+            if parsed_target_authors:
+                # Base score on proportion of matched surnames
+                author_score = matched_surnames / len(parsed_target_authors)
+                # Add capped bonus from initials
+                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1 # Max 0.05 bonus
+                author_score = min(author_score, 1.0) # Cap at 1.0
+        
+        score += author_score * 0.3 # Author weight 30%
         
         year_match_score = 0.0
         if target_year:
@@ -874,7 +949,7 @@ class DatabaseSearcher:
             for ij in item_journal_titles:
                 max_journal_sim = max(max_journal_sim, self._calculate_title_similarity(target_journal_lower, ij))
             
-            journal_match_score = max_journal_sim * 0.10
+            journal_match_score = max_journal_sim * 0.15 # Journal weight 15% (increased slightly from 10%)
             score += journal_match_score
             
         return score
@@ -888,23 +963,43 @@ class DatabaseSearcher:
             title_sim = self._calculate_title_similarity(target_title, item_title)
             score += title_sim * 0.5
         
-        author_score = 0.0
-        if 'author_name' in item and item['author_name'] and target_authors:
-            item_authors_lower = [a.lower() for a in item['author_name']]
-            target_surnames = []
-            for author in re.split(r'and|&|,', target_authors):
-                author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                if author_clean:
-                    name_parts = author_clean.split()
-                    if name_parts:
-                        surname = name_parts[-1].lower()
-                        if len(surname) > 2:
-                            target_surnames.append(surname)
-            
-            if item_authors_lower and target_surnames:
-                author_match_count = sum(1 for ts in target_surnames if any(ts in ia for ia in item_authors_lower))
-                author_score = author_match_count / max(len(target_surnames), len(item_authors_lower), 1)
-                score += author_score * 0.3
+        # --- Author Matching (30% weight) ---
+        parsed_target_authors = []
+        for a in re.split(r'and|&|,', target_authors):
+            parsed_author = ReferenceParser()._extract_author_parts(a)
+            if parsed_author:
+                parsed_target_authors.append(parsed_author)
+
+        parsed_item_authors = []
+        if 'author_name' in item and item['author_name']:
+            for author_name_str in item['author_name']: # item['author_name'] is a list of strings
+                parsed_author = ReferenceParser()._extract_author_parts(author_name_str)
+                if parsed_author:
+                    parsed_item_authors.append(parsed_author)
+
+        author_match_score = 0.0
+        if parsed_target_authors and parsed_item_authors:
+            matched_surnames = 0
+            initial_bonus = 0.0
+
+            item_surnames_set = {a['surname'] for a in parsed_item_authors}
+            item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
+
+            for target_author_part in parsed_target_authors:
+                target_surname = target_author_part['surname']
+                target_initials = target_author_part['initials']
+
+                if target_surname in item_surnames_set:
+                    matched_surnames += 1
+                    if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
+                        initial_bonus += 0.5
+
+            if parsed_target_authors:
+                author_score = matched_surnames / len(parsed_target_authors)
+                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1
+                author_score = min(author_score, 1.0)
+        
+        score += author_score * 0.3
 
         year_match_score = 0.0
         if target_year and 'first_publish_year' in item:
@@ -938,24 +1033,44 @@ class DatabaseSearcher:
             title_sim = self._calculate_title_similarity(target_title, item_title)
             score += title_sim * 0.5
 
-        author_score = 0.0
-        if item_authors and target_authors:
-            item_authors_lower = [a.lower() for a in item_authors]
-            target_surnames = []
-            for author in re.split(r'and|&|,', target_authors):
-                author_clean = re.sub(r'[^\w\s]', '', author).strip()
-                if author_clean:
-                    name_parts = author_clean.split()
-                    if name_parts:
-                        surname = name_parts[-1].lower()
-                        if len(surname) > 2:
-                            target_surnames.append(surname)
-            
-            if item_authors_lower and target_surnames:
-                author_match_count = sum(1 for ts in target_surnames if any(ts in ia for ia in item_authors_lower))
-                author_score = author_match_count / max(len(target_surnames), len(item_authors_lower), 1)
-                score += author_score * 0.3
+        # --- Author Matching (30% weight) ---
+        parsed_target_authors = []
+        for a in re.split(r'and|&|,', target_authors):
+            parsed_author = ReferenceParser()._extract_author_parts(a)
+            if parsed_author:
+                parsed_target_authors.append(parsed_author)
 
+        parsed_item_authors = []
+        if item_authors: # item_authors from Google Books API is already a list of strings
+            for author_name_str in item_authors:
+                parsed_author = ReferenceParser()._extract_author_parts(author_name_str)
+                if parsed_author:
+                    parsed_item_authors.append(parsed_author)
+
+        author_match_score = 0.0
+        if parsed_target_authors and parsed_item_authors:
+            matched_surnames = 0
+            initial_bonus = 0.0
+
+            item_surnames_set = {a['surname'] for a in parsed_item_authors}
+            item_initials_map = {a['surname']: a['initials'] for a in parsed_item_authors if a['initials']}
+
+            for target_author_part in parsed_target_authors:
+                target_surname = target_author_part['surname']
+                target_initials = target_author_part['initials']
+
+                if target_surname in item_surnames_set:
+                    matched_surnames += 1
+                    if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
+                        initial_bonus += 0.5
+
+            if parsed_target_authors:
+                author_score = matched_surnames / len(parsed_target_authors)
+                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1
+                author_score = min(author_score, 1.0)
+        
+        score += author_score * 0.3
+        
         year_match_score = 0.0
         if target_year and item_published_date:
             item_year = item_published_date[:4]
@@ -1055,7 +1170,7 @@ class ReferenceVerifier:
         
         if elements.get('doi'):
             doi_result = self.searcher.check_doi_and_verify_content(
-                elements['doi'], 
+                elements.get('doi', ''), 
                 elements.get('title', ''),
                 elements.get('authors', ''),
                 elements.get('journal', ''),
