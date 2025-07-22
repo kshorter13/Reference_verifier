@@ -710,6 +710,16 @@ class DatabaseSearcher:
             return {'found': False, 'reason': f'Title search error: {str(e)}'}
 
     def search_comprehensive(self, authors: str, title: str, year: str, journal: str) -> Dict:
+        # Initialize parsed_expected_authors here
+        parsed_expected_authors = []
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_expected_authors.append(parsed_author)
+
         try:
             query_parts = []
             
@@ -756,7 +766,8 @@ class DatabaseSearcher:
                 best_score = 0.0
                 
                 for item in items:
-                    score = self._calculate_comprehensive_match_score(item, title, authors, year, journal)
+                    # Pass parsed_expected_authors to _calculate_comprehensive_match_score
+                    score = self._calculate_comprehensive_match_score(item, title, authors, year, journal, parsed_expected_authors)
                     if score > best_score:
                         best_score = score
                         best_match = item
@@ -824,6 +835,16 @@ class DatabaseSearcher:
             return {'found': False, 'reason': f'ISBN search error: {str(e)}'}
 
     def search_books_comprehensive(self, title: str, authors: str, year: str, publisher: str) -> Dict:
+        # Initialize parsed_expected_authors here
+        parsed_expected_authors = []
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_expected_authors.append(parsed_author)
+
         try:
             query_parts = []
             
@@ -861,7 +882,8 @@ class DatabaseSearcher:
                 best_score = 0.0
                 
                 for doc in data['docs']:
-                    score = self._calculate_book_match_score(doc, title, authors, year, publisher)
+                    # Pass parsed_expected_authors to _calculate_book_match_score
+                    score = self._calculate_book_match_score(doc, title, authors, year, publisher, parsed_expected_authors)
                     if score > best_score:
                         best_score = score
                         best_match = doc
@@ -883,6 +905,16 @@ class DatabaseSearcher:
             return {'found': False, 'reason': f'Open Library book search error: {str(e)}'}
 
     def search_books_google_books(self, title: str, authors: str, year: str, publisher: str) -> Dict:
+        # Initialize parsed_expected_authors here
+        parsed_expected_authors = []
+        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
+        for raw_part in raw_expected_author_parts:
+            cleaned_part = raw_part.strip()
+            if cleaned_part:
+                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
+                if parsed_author:
+                    parsed_expected_authors.append(parsed_author)
+
         try:
             query_parts = []
             if title:
@@ -931,9 +963,10 @@ class DatabaseSearcher:
                     item_published_date = volume_info.get('publishedDate', '')
                     item_publisher = volume_info.get('publisher', '')
 
+                    # Pass parsed_expected_authors to _calculate_google_book_match_score
                     score = self._calculate_google_book_match_score(
                         item_title, item_authors, item_published_date, item_publisher,
-                        title, authors, year, publisher
+                        title, authors, year, publisher, parsed_expected_authors
                     )
 
                     if score > best_score:
@@ -991,9 +1024,12 @@ class DatabaseSearcher:
             }
 
     def _calculate_title_similarity(self, title1: str, title2: str) -> float:
-        # Normalize by removing non-alphanumeric characters and converting to lowercase
-        normalized_title1 = re.sub(r'[^a-zA-Z0-9\s]', '', title1).lower()
-        normalized_title2 = re.sub(r'[^a-zA-Z0-9\s]', '', title2).lower()
+        # Normalize by replacing '&' with 'and', then removing other non-alphanumeric characters and converting to lowercase
+        normalized_title1 = re.sub(r'&', 'and', title1)
+        normalized_title1 = re.sub(r'[^a-zA-Z0-9\s]', '', normalized_title1).lower()
+        
+        normalized_title2 = re.sub(r'&', 'and', title2)
+        normalized_title2 = re.sub(r'[^a-zA-Z0-9\s]', '', normalized_title2).lower()
 
         words1 = set(normalized_title1.split())
         words2 = set(normalized_title2.split())
@@ -1006,7 +1042,7 @@ class DatabaseSearcher:
         
         return len(intersection) / len(union) if union else 0.0
 
-    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str) -> float:
+    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
         
         title_sim = 0.0
@@ -1016,15 +1052,7 @@ class DatabaseSearcher:
             score += title_sim * 0.4 # Title weight 40%
         
         # --- Author Matching (30% weight) ---
-        parsed_target_authors = []
-        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
-        for raw_part in raw_expected_author_parts:
-            cleaned_part = raw_part.strip()
-            if cleaned_part:
-                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                if parsed_author:
-                    parsed_expected_authors.append(parsed_author)
-
+        # parsed_expected_authors is now passed as an argument
         parsed_item_authors = []
         if 'author' in item and item['author']:
             for author_data in item['author']:
@@ -1035,7 +1063,7 @@ class DatabaseSearcher:
                     parsed_item_authors.append({'surname': surname, 'initials': initials})
 
         author_score = 0.0
-        if parsed_target_authors and parsed_item_authors:
+        if parsed_expected_authors and parsed_item_authors:
             matched_surnames = 0
             initial_bonus = 0.0 # Total bonus from initials
 
@@ -1052,11 +1080,11 @@ class DatabaseSearcher:
                     if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
                         initial_bonus += 0.5 # Each initial match adds 0.5 to a potential bonus
 
-            if parsed_target_authors:
+            if parsed_expected_authors:
                 # Base score on proportion of matched surnames
-                author_score = matched_surnames / len(parsed_target_authors)
+                author_score = matched_surnames / len(parsed_expected_authors)
                 # Add capped bonus from initials
-                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1 # Max 0.05 bonus
+                author_score += (initial_bonus / len(parsed_expected_authors)) * 0.1 # Max 0.05 bonus
                 author_score = min(author_score, 1.0) # Cap score at 1.0
         
         score += author_score * 0.3 # Author weight 30%
@@ -1089,7 +1117,7 @@ class DatabaseSearcher:
             
         return score
 
-    def _calculate_book_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str) -> float:
+    def _calculate_book_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
         
         title_sim = 0.0
@@ -1099,15 +1127,7 @@ class DatabaseSearcher:
             score += title_sim * 0.5
         
         # --- Author Matching (30% weight) ---
-        parsed_target_authors = []
-        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
-        for raw_part in raw_expected_author_parts:
-            cleaned_part = raw_part.strip()
-            if cleaned_part:
-                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                if parsed_author:
-                    parsed_target_authors.append(parsed_author)
-
+        # parsed_expected_authors is now passed as an argument
         parsed_item_authors = []
         if 'author_name' in item and item['author_name']:
             for author_name_str in item['author_name']: # item['author_name'] is a list of strings
@@ -1116,7 +1136,7 @@ class DatabaseSearcher:
                     parsed_item_authors.append(parsed_author)
 
         author_match_score = 0.0
-        if parsed_target_authors and parsed_item_authors:
+        if parsed_expected_authors and parsed_item_authors:
             matched_surnames = 0
             initial_bonus = 0.0
 
@@ -1132,9 +1152,9 @@ class DatabaseSearcher:
                     if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
                         initial_bonus += 0.5
 
-            if parsed_target_authors:
-                author_score = matched_surnames / len(parsed_target_authors)
-                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1
+            if parsed_expected_authors:
+                author_score = matched_surnames / len(parsed_expected_authors)
+                author_score += (initial_bonus / len(parsed_expected_authors)) * 0.1
                 author_score = min(author_score, 1.0)
         
         score += author_score * 0.3
@@ -1163,7 +1183,7 @@ class DatabaseSearcher:
         return score
 
     def _calculate_google_book_match_score(self, item_title: str, item_authors: List[str], item_published_date: str, item_publisher: str,
-                                          target_title: str, target_authors: str, target_year: str, target_publisher: str) -> float:
+                                          target_title: str, target_authors: str, target_year: str, target_publisher: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
 
         title_sim = 0.0
@@ -1172,15 +1192,7 @@ class DatabaseSearcher:
             score += title_sim * 0.5
 
         # --- Author Matching (30% weight) ---
-        parsed_target_authors = []
-        raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', target_authors)
-        for raw_part in raw_expected_author_parts:
-            cleaned_part = raw_part.strip()
-            if cleaned_part:
-                parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                if parsed_author:
-                    parsed_target_authors.append(parsed_author)
-
+        # parsed_expected_authors is now passed as an argument
         parsed_item_authors = []
         if item_authors: # item_authors from Google Books API is already a list of strings
             for author_name_str in item_authors:
@@ -1189,7 +1201,7 @@ class DatabaseSearcher:
                     parsed_item_authors.append(parsed_author)
 
         author_match_score = 0.0
-        if parsed_target_authors and parsed_item_authors:
+        if parsed_expected_authors and parsed_item_authors:
             matched_surnames = 0
             initial_bonus = 0.0
 
@@ -1205,9 +1217,9 @@ class DatabaseSearcher:
                     if target_initials and target_surname in item_initials_map and target_initials == item_initials_map[target_surname]:
                         initial_bonus += 0.5
 
-            if parsed_target_authors:
-                author_score = matched_surnames / len(parsed_target_authors)
-                author_score += (initial_bonus / len(parsed_target_authors)) * 0.1
+            if parsed_expected_authors:
+                author_score = matched_surnames / len(parsed_expected_authors)
+                author_score += (initial_bonus / len(parsed_expected_authors)) * 0.1
                 author_score = min(author_score, 1.0)
         
         score += author_score * 0.3
