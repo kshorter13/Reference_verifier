@@ -1190,7 +1190,7 @@ class ReferenceVerifier:
                     structure_check_result = self.parser.check_structural_format(ref.text, format_type, ref_type)
                     result['structure_check'] = structure_check_result
                     result['format_valid'] = structure_check_result['structure_valid']
-                    result['errors'] = structure_check_result['structure_issues']
+                    result['errors'] = structure_check_result['structure_issues'] # Existing structural issues
 
                     # Check if the "found" match score meets the user's main similarity threshold
                     if existence_results['best_match_score'] >= self.searcher.similarity_threshold:
@@ -1200,16 +1200,12 @@ class ReferenceVerifier:
                         else:
                             result['structure_status'] = 'invalid'
                             result['overall_status'] = 'authentic_but_structure_error'
-                    else: # Found, but match score is below the main similarity threshold
-                        # This is the case where it's "authentic but weak match"
-                        if structure_check_result['structure_valid']:
-                            result['structure_status'] = 'valid'
-                            result['overall_status'] = 'authentic_but_structure_error' # Re-using this status for "authentic but needs fixing"
-                            result['errors'].append(f"Authenticity match (score: {existence_results['best_match_score']:.1%}) is below your set threshold ({self.searcher.similarity_threshold:.1%}). Consider adjusting the threshold or improving reference details.")
-                        else:
-                            result['structure_status'] = 'invalid'
-                            result['overall_status'] = 'authentic_but_structure_error' # Re-using this status
-                            result['errors'].append(f"Authenticity match (score: {existence_results['best_match_score']:.1%}) is below your set threshold ({self.searcher.similarity_threshold:.1%}). Consider adjusting the threshold or improving reference details.")
+                    else: # Found, but match score is below the user's main similarity threshold
+                        result['overall_status'] = 'authentic_but_weak_match' # NEW STATUS
+                        result['structure_status'] = 'valid' if structure_check_result['structure_valid'] else 'invalid' # Keep structural status
+                        result['errors'].append(f"Authenticity match (score: {existence_results['best_match_score']:.1%}) is below your set threshold ({self.searcher.similarity_threshold:.1%}). Consider adjusting the threshold or improving reference details.")
+                        # If there were no other structural issues, this will be the only "error"
+                        # If there were other structural issues, this will be appended.
 
                 else: # Fallback, though should be covered by reason_for_fake
                     result['existence_status'] = 'not_found'
@@ -1232,6 +1228,8 @@ class ReferenceVerifier:
             'search_details': {},
             'verification_sources': [],
             'best_match_score': 0.0,
+            'best_match_title_similarity': 0.0, # New
+            'best_match_journal_similarity': 0.0, # New
             'reason_for_fake': None
         }
         
@@ -1264,6 +1262,8 @@ class ReferenceVerifier:
                     results['doi_valid'] = True
                     results['any_found'] = True
                     results['best_match_score'] = max(results['best_match_score'], doi_result.get('match_score', 0))
+                    results['best_match_title_similarity'] = doi_result.get('title_similarity', 0)
+                    results['best_match_journal_similarity'] = doi_result.get('journal_similarity', 0)
                     if doi_result.get('doi_url'):
                         results['verification_sources'].append({
                             'type': 'DOI (Comprehensive Match)',
@@ -1295,6 +1295,8 @@ class ReferenceVerifier:
                     results['comprehensive_journal_found_crossref'] = True
                     results['any_found'] = True
                     results['best_match_score'] = max(results['best_match_score'], comprehensive_crossref_result.get('match_score', 0))
+                    results['best_match_title_similarity'] = comprehensive_crossref_result.get('title_similarity', 0)
+                    results['best_match_journal_similarity'] = comprehensive_crossref_result.get('journal_similarity', 0)
                     if comprehensive_crossref_result.get('source_url'):
                         results['verification_sources'].append({
                             'type': 'Journal Comprehensive Search (Crossref)',
@@ -1518,6 +1520,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                 total_refs = len(results)
                 valid_refs = sum(1 for r in results if r['overall_status'] == 'valid')
                 authentic_structure_errors = sum(1 for r in results if r['overall_status'] == 'authentic_but_structure_error')
+                authentic_weak_match = sum(1 for r in results if r['overall_status'] == 'authentic_but_weak_match') # New count
                 content_errors = sum(1 for r in results if r['overall_status'] == 'content_error')
                 likely_fake = sum(1 for r in results if r['overall_status'] == 'likely_fake')
                 
@@ -1526,16 +1529,18 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                     ref_type = result.get('reference_type', 'journal')
                     type_counts[ref_type] = type_counts.get(ref_type, 0) + 1
                 
-                col_a, col_b, col_c, col_d, col_e = st.columns(5)
+                col_a, col_b, col_c, col_d, col_e, col_f = st.columns(6) # Adjusted columns
                 with col_a:
                     st.metric("Total", total_refs)
                 with col_b:
                     st.metric("✅ Valid", valid_refs)
                 with col_c:
-                    st.metric("⚠️ Authentic, Fix Format", authentic_structure_errors)
+                    st.metric("⚠️ Structural", authentic_structure_errors) # Shorter label
                 with col_d:
-                    st.metric("⚠️ Content", content_errors)
+                    st.metric("⚠️ Weak Match", authentic_weak_match) # New metric
                 with col_e:
+                    st.metric("⚠️ Content", content_errors)
+                with col_f:
                     st.metric("🚨 Likely Fake", likely_fake)
                 
                 if type_counts:
@@ -1581,10 +1586,6 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         
                         st.write("**This reference was found in external databases and is likely authentic, but its formatting needs correction.**")
                         
-                        # Display the new reason if it was added for weak match
-                        if 'reason_for_fake' in result and result['reason_for_fake']:
-                            st.write(f"**Authenticity Note:** {result['reason_for_fake']}")
-
                         issues = result['structure_check'].get('structure_issues', [])
                         if issues:
                             st.write(f"**Structural problems:**")
@@ -1604,7 +1605,41 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                 else:
                                     st.write(f"• **{source_type}**: {description}")
                         st.write("---")
-                        st.write("**Suggestion:** Correct the formatting issues listed above to make this reference fully compliant. You may also consider adjusting the 'Authenticity Similarity Threshold' in the sidebar if you believe this match is sufficient." ) # Added suggestion for threshold
+                        st.write("**Suggestion:** Correct the formatting issues listed above to make this reference fully compliant.")
+
+                    elif status == 'authentic_but_weak_match': # NEW STATUS HANDLING
+                        st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}**: Authentic but Weak Match / Needs Review")
+                        st.write(ref_text)
+                        
+                        st.write("**This reference was found in external databases and is likely authentic, but the match confidence is below your set threshold.**")
+                        
+                        # Display specific match scores for journals if applicable
+                        if result['reference_type'] == 'journal':
+                            st.write(f"**Match Details (from best Crossref match):**")
+                            st.write(f"• Overall Match Score: {result['existence_check'].get('best_match_score', 0):.1%}")
+                            st.write(f"• Title Similarity: {result['existence_check'].get('best_match_title_similarity', 0):.1%}")
+                            st.write(f"• Journal Similarity: {result['existence_check'].get('best_match_journal_similarity', 0):.1%}")
+                        
+                        issues = result['errors'] # This now includes the threshold message
+                        if issues:
+                            st.write(f"**Issues identified:**")
+                            for issue in issues:
+                                st.write(f"• {issue}")
+                        
+                        existence = result['existence_check']
+                        verification_sources = existence.get('verification_sources', [])
+                        if verification_sources:
+                            st.write("**✅ Authenticity verified via:**")
+                            for source in verification_sources:
+                                source_type = source['type']
+                                source_url = source['url']
+                                description = source['description']
+                                if source_url:
+                                    st.markdown(f"• **{source_type}**: [{description}]({source_url})")
+                                else:
+                                    st.write(f"• **{source_type}**: {description}")
+                        st.write("---")
+                        st.write("**Suggestion:** Review the reference for subtle errors or variations. You might also consider lowering the 'Authenticity Similarity Threshold' in the sidebar if you deem this match acceptable.")
 
                     elif status == 'content_error':
                         st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}**: Content Extraction Issues")
@@ -1628,31 +1663,27 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         current_ref_type = result.get('reference_type', 'journal')
 
                         if current_ref_type == 'journal':
-                            # Always show DOI check result if it ran
+                            # Show DOI check details
                             if 'doi' in search_details:
                                 doi_check_result = search_details['doi']
                                 if not doi_check_result['valid']:
                                     st.write(f"• DOI check: {doi_check_result.get('reason', 'N/A')}")
+                                else:
+                                    st.write(f"• DOI check: Valid DOI found, but content match was weak (Overall: {doi_check_result.get('match_score', 0):.1%}, Title: {doi_check_result.get('title_similarity', 0):.1%}, Journal: {doi_check_result.get('journal_similarity', 0):.1%})")
                                     if 'validation_errors' in doi_check_result and doi_check_result['validation_errors']:
                                         for err in doi_check_result['validation_errors']:
                                             st.markdown(f"  - _{err}_")
-                                else:
-                                    st.write(f"• DOI check: Valid and matched (score: {doi_check_result.get('match_score', 0):.1%})")
-                                    if 'reason_for_fake' in existence and existence['reason_for_fake'] == "Extremely low title/journal similarity with DOI metadata.":
-                                        st.markdown(f"  - _Flagged fake due to low title similarity ({doi_check_result.get('title_similarity', 0):.1%}) or journal similarity ({doi_check_result.get('journal_similarity', 0):.1%})_")
-                            elif 'doi_reason' in search_details: # Display reason if DOI check was attempted but not valid
+                            elif 'doi_reason' in search_details:
                                 st.write(f"• DOI check: {search_details['doi_reason']}")
 
-                            # Always show comprehensive Crossref result if it ran
+                            # Show comprehensive Crossref result details
                             if 'comprehensive_journal_crossref' in search_details:
                                 crossref_search_result = search_details['comprehensive_journal_crossref']
                                 if not crossref_search_result['found']:
                                     st.write(f"• Crossref search: {crossref_search_result.get('reason', 'N/A')}")
                                 else:
-                                    st.write(f"• Crossref search: Found and matched (score: {crossref_search_result.get('match_score', 0):.1%})")
-                                    if 'reason_for_fake' in existence and existence['reason_for_fake'] == "Extremely low title/journal similarity with Crossref search result.":
-                                        st.markdown(f"  - _Flagged fake due to low title similarity ({crossref_search_result.get('title_similarity', 0):.1%}) or journal similarity ({crossref_search_result.get('journal_similarity', 0):.1%})_")
-                            elif 'comprehensive_crossref_reason' in search_details: # Display reason if comprehensive Crossref was attempted but not found
+                                    st.write(f"• Crossref search: Found, but content match was weak (Overall: {crossref_search_result.get('match_score', 0):.1%}, Title: {crossref_search_result.get('title_similarity', 0):.1%}, Journal: {crossref_search_result.get('journal_similarity', 0):.1%})")
+                            elif 'comprehensive_crossref_reason' in search_details:
                                 st.write(f"• Crossref search: {search_details['comprehensive_crossref_reason']}")
 
                         elif current_ref_type == 'book':
@@ -1703,9 +1734,10 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
         
         **Result Categories:**
         - ✅ **Valid**: Passes authenticity and has correct formatting.
-        - ⚠️ **Authentic but Structural Format Issues**: Verified as authentic in databases, but has formatting problems that need fixing. This category also now includes references that are found in databases but have an authenticity match score below your set threshold.
+        - ⚠️ **Authentic but Structural Format Issues**: Verified as authentic in databases, but has formatting problems that need fixing.
+        - ⚠️ **Authentic but Weak Match / Needs Review**: Verified as authentic in databases, but its overall match score is below your set 'Authenticity Similarity Threshold'. This indicates it's likely real but might have minor inaccuracies or simply not meet your high confidence bar.
         - ⚠️ **Content Issues**: Key information could not be reliably extracted from the reference text, preventing authenticity checks.
-        - 🚨 **Likely Fake**: Well-formatted but could not be found or verified in any external database, suggesting it might be fabricated.
+        - 🚨 **Likely Fake**: Well-formatted but could not be found or verified in any external database, suggesting it might be fabricated. This also includes cases where a provided DOI or other key identifier points to content that is extremely dissimilar (below 10% similarity) to the reference's stated title or journal.
         """)
 
 if __name__ == "__main__":
