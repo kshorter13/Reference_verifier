@@ -318,11 +318,12 @@ class ReferenceParser:
         return elements
 
 class DatabaseSearcher:
-    def __init__(self):
+    def __init__(self, similarity_threshold: float = 0.90): # Default to 0.90
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
+        self.similarity_threshold = similarity_threshold # Store the threshold
 
     def check_doi_and_verify_content(self, doi: str, expected_title: str, expected_authors: str, expected_journal: str, expected_year: str) -> Dict:
         """
@@ -382,22 +383,22 @@ class DatabaseSearcher:
 
             validation_errors = []
 
-            # --- Strict Title Match (95%) ---
+            # --- Strict Title Match ---
             title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
-            if expected_title and title_similarity < 0.95: # Set to 95%
+            if expected_title and title_similarity < self.similarity_threshold: # Use dynamic threshold
                 validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
 
-            # --- Strict Author Match (95%) ---
+            # --- Strict Author Match ---
             expected_surnames = [re.sub(r'[^\w\s]', '', a).strip().split()[-1].lower() for a in re.split(r'[,&]', expected_authors) if re.sub(r'[^\w\s]', '', a).strip()]
             actual_surnames = [s.lower() for s in actual_authors_list]
             
             author_match_count = sum(1 for es in expected_surnames if es in actual_surnames)
-            if expected_surnames and author_match_count / len(expected_surnames) < 0.95: # Set to 95%
+            if expected_surnames and author_match_count / len(expected_surnames) < self.similarity_threshold: # Use dynamic threshold
                 validation_errors.append(f"Author mismatch (expected: {expected_surnames}, actual: {actual_surnames}, matched: {author_match_count}/{len(expected_surnames)})")
 
-            # --- Strict Journal Match (95%) ---
+            # --- Strict Journal Match ---
             journal_sim = self._calculate_title_similarity(expected_journal.lower(), actual_journal.lower())
-            if expected_journal and journal_sim < 0.95: # Set to 95%
+            if expected_journal and journal_sim < self.similarity_threshold: # Use dynamic threshold
                 validation_errors.append(f"Journal mismatch (expected: '{expected_journal}', actual: '{actual_journal}', similarity: {journal_sim:.1%})")
             
             # --- Strict Year Match ---
@@ -467,7 +468,7 @@ class DatabaseSearcher:
                         item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
                         similarity = self._calculate_title_similarity(title.lower(), item_title.lower())
                         
-                        if similarity > 0.95: # Changed to 95%
+                        if similarity > self.similarity_threshold: # Use dynamic threshold
                             source_url = None
                             if 'DOI' in item:
                                 source_url = f"https://doi.org/{item['DOI']}"
@@ -539,7 +540,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = item
                 
-                if best_score > 0.95: # Changed to 95%
+                if best_score > self.similarity_threshold: # Use dynamic threshold
                     source_url = None
                     if 'DOI' in best_match:
                         source_url = f"https://doi.org/{best_match['DOI']}"
@@ -641,7 +642,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = doc
                 
-                if best_score > 0.95: # Changed to 95%
+                if best_score > self.similarity_threshold: # Use dynamic threshold
                     return {
                         'found': True,
                         'match_score': best_score,
@@ -709,7 +710,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = item
 
-                if best_score > 0.95: # Changed to 95%
+                if best_score > self.similarity_threshold: # Use dynamic threshold
                     return {
                         'found': True,
                         'match_score': best_score,
@@ -827,19 +828,19 @@ class DatabaseSearcher:
             target_journal_lower = target_journal.lower()
             
             if any(target_journal_lower in ij for ij in item_journal_titles) or \
-               any(self._calculate_title_similarity(target_journal_lower, ij) > 0.95 for ij in item_journal_titles): # Changed to 95%
+               any(self._calculate_title_similarity(target_journal_lower, ij) > self.similarity_threshold for ij in item_journal_titles): # Use dynamic threshold
                 journal_match_score = 0.10
             score += journal_match_score
 
         # Adjust score based on how many key elements had a decent match
         matched_elements_count = 0
-        if title_sim > 0.95: matched_elements_count += 1 # Changed to 95%
-        if author_score > 0.95: matched_elements_count += 1 # Changed to 95%
+        if title_sim > self.similarity_threshold: matched_elements_count += 1 # Use dynamic threshold
+        if author_score > self.similarity_threshold: matched_elements_count += 1 # Use dynamic threshold
         if year_match_score > 0: matched_elements_count += 1
         if journal_match_score > 0: matched_elements_count += 1
 
         # Penalize if very few elements matched strongly, unless the overall score is already very high
-        if matched_elements_count < 2 and score < 0.95: # Changed to 95%
+        if matched_elements_count < 2 and score < self.similarity_threshold: # Use dynamic threshold
             score *= 0.7 # Reduce score if only one element is a strong match
             
         return score
@@ -939,7 +940,7 @@ class DatabaseSearcher:
         if target_publisher and item_publisher:
             # Use title similarity for publisher as well for flexibility
             pub_sim = self._calculate_title_similarity(target_publisher, item_publisher)
-            if pub_sim > 0.95: # Changed to 95%
+            if pub_sim > self.similarity_threshold: # Use dynamic threshold
                 publisher_match_score = 0.05
             score += publisher_match_score
         
@@ -947,9 +948,9 @@ class DatabaseSearcher:
 
 
 class ReferenceVerifier:
-    def __init__(self):
+    def __init__(self, similarity_threshold: float = 0.90): # Default to 0.90
         self.parser = ReferenceParser()
-        self.searcher = DatabaseSearcher()
+        self.searcher = DatabaseSearcher(similarity_threshold) # Pass threshold to searcher
 
     def verify_references(self, text: str, format_type: str, progress_callback=None) -> List[Dict]:
         references = self.parser.identify_references(text)
@@ -1163,6 +1164,17 @@ def main():
         "Select Reference Format",
         ["APA", "Vancouver"]
     )
+
+    # New slider for similarity threshold
+    similarity_percentage = st.sidebar.slider(
+        "Set Authenticity Similarity Threshold (%)",
+        min_value=70,  # Minimum percentage
+        max_value=100, # Maximum percentage
+        value=90,      # Default to 90%
+        step=5,        # Step by 5%
+        help="Adjust the strictness of authenticity matching. Higher values require closer matches in external databases."
+    )
+    similarity_threshold = similarity_percentage / 100.0 # Convert to decimal for internal use
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("**🔍 Verification Process (New Order):**")
@@ -1262,7 +1274,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                 status_text.text(f"{message} ({current}/{total})")
             
             with st.spinner("Initializing verification..."):
-                verifier = ReferenceVerifier()
+                verifier = ReferenceVerifier(similarity_threshold) # Pass threshold
                 results = verifier.verify_references(reference_text, format_type, update_progress)
             
             progress_bar.empty()
