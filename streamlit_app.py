@@ -25,7 +25,7 @@ class ReferenceParser:
             'journal_title_after_year': r'\)\.\s*([^.]+)\.', # This is for a specific title format
             'volume_pages': r'(\d+)(?:\((\d+)\))?,?\s*(?:p\.?\s*)?(\d+(?:-\d+)?)\.?', # Added optional 'p.'
             'publisher_info': r'([A-Z][^.]*(?:Press|Publishers?|Publications?|Books?|Academic|University|Ltd|Inc|Corp|Kluwer|Elsevier|MIT Press|Human Kinetics)[^.]*)',
-            'doi_pattern': r'https?://doi\.org/([^\s]+)',
+            'doi_pattern': r'(?:https?://doi\.org/|DOI:\s*|doi:\s*)?([^\s]+(?:/\S+)*)', # Updated to capture "DOI: " format and bare DOIs
             'author_pattern': r'^([^()]+?)(?:\s*\(\d{4}\))', # Corrected backslashes
             'isbn_pattern': r'ISBN:?\s*([\d-]+)',
             'url_pattern': r'(https?://[^\s]+)',
@@ -301,7 +301,7 @@ class ReferenceParser:
                         else: # Fallback if no clear period separator, try to split by common journal words
                             # This is a heuristic for cases like "Title JournalName, 43(5), 54-64"
                             # Try to find a common journal keyword to split
-                            journal_keywords_for_split = ['Journal', 'Review', 'Quarterly', 'Annual', 'Strength & Conditioning Journal', 'Strength and Conditioning Journal'] # Added full name
+                            journal_keywords_for_split = ['Journal', 'Review', 'Proceedings', 'Quarterly', 'Annual', 'Strength & Conditioning Journal', 'Strength and Conditioning Journal'] # Added full name
                             split_found = False
                             for kw in journal_keywords_for_split:
                                 # Look for the keyword followed by numbers (volume/issue)
@@ -690,16 +690,16 @@ class DatabaseSearcher:
                 items = data['message']['items']
                 best_match = None
                 best_score = 0.0
+                best_match_details = {} 
                 
                 for item in items:
-                    # _calculate_comprehensive_match_score now returns individual scores too
                     score_details = self._calculate_comprehensive_match_score(item, title, authors, year, journal, parsed_expected_authors)
                     current_composite_score = score_details['composite_score']
 
                     if current_composite_score > best_score:
                         best_score = current_composite_score
                         best_match = item
-                        best_match_details = score_details # Store the detailed scores
+                        best_match_details = score_details 
                 
                 if best_match:
                     source_url = None
@@ -714,8 +714,8 @@ class DatabaseSearcher:
                         'matched_title': best_match.get('title', ['Unknown'])[0] if best_match.get('title') else 'Unknown',
                         'source_url': source_url,
                         'total_results': len(items),
-                        'title_similarity': best_match_details['title_similarity'], # Pass through
-                        'journal_similarity': best_match_details['journal_similarity'], # Pass through
+                        'title_similarity': best_match_details['title_similarity'], 
+                        'journal_similarity': best_match_details['journal_similarity'], 
                         'author_score': best_match_details['author_score'],
                         'year_score': best_match_details['year_score']
                     }
@@ -1181,7 +1181,10 @@ class ReferenceVerifier:
                 existence_results = self._verify_existence(elements)
                 result['existence_check'] = existence_results
 
-                if existence_results['any_found']:
+                if existence_results['reason_for_fake']: # This means either 10% rule triggered OR no match found at all
+                    result['existence_status'] = 'not_found'
+                    result['overall_status'] = 'likely_fake'
+                elif existence_results['any_found']: # Something was found (passed 10% rule if journal)
                     result['existence_status'] = 'found'
                     
                     structure_check_result = self.parser.check_structural_format(ref.text, format_type, ref_type)
@@ -1189,13 +1192,26 @@ class ReferenceVerifier:
                     result['format_valid'] = structure_check_result['structure_valid']
                     result['errors'] = structure_check_result['structure_issues']
 
-                    if structure_check_result['structure_valid']:
-                        result['structure_status'] = 'valid'
-                        result['overall_status'] = 'valid'
-                    else:
-                        result['structure_status'] = 'invalid'
-                        result['overall_status'] = 'authentic_but_structure_error'
-                else:
+                    # Check if the "found" match score meets the user's main similarity threshold
+                    if existence_results['best_match_score'] >= self.searcher.similarity_threshold:
+                        if structure_check_result['structure_valid']:
+                            result['structure_status'] = 'valid'
+                            result['overall_status'] = 'valid'
+                        else:
+                            result['structure_status'] = 'invalid'
+                            result['overall_status'] = 'authentic_but_structure_error'
+                    else: # Found, but match score is below the main similarity threshold
+                        # This is the case where it's "authentic but weak match"
+                        if structure_check_result['structure_valid']:
+                            result['structure_status'] = 'valid'
+                            result['overall_status'] = 'authentic_but_structure_error' # Re-using this status for "authentic but needs fixing"
+                            result['errors'].append(f"Authenticity match (score: {existence_results['best_match_score']:.1%}) is below your set threshold ({self.searcher.similarity_threshold:.1%}). Consider adjusting the threshold or improving reference details.")
+                        else:
+                            result['structure_status'] = 'invalid'
+                            result['overall_status'] = 'authentic_but_structure_error' # Re-using this status
+                            result['errors'].append(f"Authenticity match (score: {existence_results['best_match_score']:.1%}) is below your set threshold ({self.searcher.similarity_threshold:.1%}). Consider adjusting the threshold or improving reference details.")
+
+                else: # Fallback, though should be covered by reason_for_fake
                     result['existence_status'] = 'not_found'
                     result['overall_status'] = 'likely_fake'
             
@@ -1214,7 +1230,9 @@ class ReferenceVerifier:
             'comprehensive_book_found_googlebooks': False,
             'website_accessible': False,
             'search_details': {},
-            'verification_sources': []
+            'verification_sources': [],
+            'best_match_score': 0.0,
+            'reason_for_fake': None
         }
         
         ref_type = elements.get('reference_type', 'journal')
@@ -1239,25 +1257,25 @@ class ReferenceVerifier:
                     # Apply the 10% rule for title/journal similarity
                     if doi_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
                        doi_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
-                        results['any_found'] = False
                         results['reason_for_fake'] = "Extremely low title/journal similarity with DOI metadata."
                         return results # Immediately return as likely fake
                     
-                    # If passed 10% rule, check against general similarity threshold
-                    if doi_result.get('match_score', 0) >= self.searcher.similarity_threshold:
-                        results['doi_valid'] = True
-                        results['any_found'] = True
-                        if doi_result.get('doi_url'):
-                            results['verification_sources'].append({
-                                'type': 'DOI (Comprehensive Match)',
-                                'url': doi_result['doi_url'],
-                                'description': f"DOI verified with {doi_result.get('match_score', 0):.1%} content match"
-                            })
-                else:
+                    # If passed 10% rule, it's considered found for authenticity
+                    results['doi_valid'] = True
+                    results['any_found'] = True
+                    results['best_match_score'] = max(results['best_match_score'], doi_result.get('match_score', 0))
+                    if doi_result.get('doi_url'):
+                        results['verification_sources'].append({
+                            'type': 'DOI (Comprehensive Match)',
+                            'url': doi_result['doi_url'],
+                            'description': f"DOI verified with {doi_result.get('match_score', 0):.1%} content match"
+                        })
+                # If DOI check was not valid, capture its reason
+                elif 'reason' in doi_result:
                     results['search_details']['doi_reason'] = doi_result.get('reason', 'Unknown DOI error')
 
-            # If not found by DOI or DOI check failed, try comprehensive Crossref search
-            if not results['any_found']:
+            # If not found by DOI or DOI check failed (and not already flagged as fake by low sim), try comprehensive Crossref search
+            if not results['any_found'] and not results['reason_for_fake']:
                 comprehensive_crossref_result = self.searcher.search_comprehensive(
                     elements.get('authors', ''),
                     elements.get('title', ''),
@@ -1266,25 +1284,25 @@ class ReferenceVerifier:
                 )
                 results['search_details']['comprehensive_journal_crossref'] = comprehensive_crossref_result
                 
-                if comprehensive_crossref_result['found']: # Check if a match was found
+                if comprehensive_crossref_result['found']: # Check if a match was found (meaning it passed the main similarity_threshold)
                     # Apply the 10% rule for title/journal similarity
                     if comprehensive_crossref_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
                        comprehensive_crossref_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
-                        results['any_found'] = False
                         results['reason_for_fake'] = "Extremely low title/journal similarity with Crossref search result."
                         return results # Immediately return as likely fake
 
-                    # If passed 10% rule, check against general similarity threshold
-                    if comprehensive_crossref_result.get('match_score', 0) >= self.searcher.similarity_threshold:
-                        results['comprehensive_journal_found_crossref'] = True
-                        results['any_found'] = True
-                        if comprehensive_crossref_result.get('source_url'):
-                            results['verification_sources'].append({
-                                'type': 'Journal Comprehensive Search (Crossref)',
-                                'url': comprehensive_crossref_result['source_url'],
-                                'description': f"Multi-element match (confidence: {comprehensive_crossref_result.get('match_score', 0):.1%})"
-                            })
-                else:
+                    # If passed 10% rule, it's considered found for authenticity
+                    results['comprehensive_journal_found_crossref'] = True
+                    results['any_found'] = True
+                    results['best_match_score'] = max(results['best_match_score'], comprehensive_crossref_result.get('match_score', 0))
+                    if comprehensive_crossref_result.get('source_url'):
+                        results['verification_sources'].append({
+                            'type': 'Journal Comprehensive Search (Crossref)',
+                            'url': comprehensive_crossref_result['source_url'],
+                            'description': f"Multi-element match (confidence: {comprehensive_crossref_result.get('match_score', 0):.1%})"
+                        })
+                # If comprehensive Crossref search was not found, capture its reason
+                elif 'reason' in comprehensive_crossref_result:
                     results['search_details']['comprehensive_crossref_reason'] = comprehensive_crossref_result.get('reason', 'Unknown Crossref error')
         
         # Book-specific searches
@@ -1296,6 +1314,7 @@ class ReferenceVerifier:
                 if isbn_result['found']:
                     results['isbn_found'] = True
                     results['any_found'] = True
+                    results['best_match_score'] = max(results['best_match_score'], 1.0) # ISBN is strong, treat as perfect match
                     if isbn_result.get('source_url'):
                         results['verification_sources'].append({
                             'type': 'ISBN Verification (Open Library)',
@@ -1315,6 +1334,7 @@ class ReferenceVerifier:
                 if book_result_ol['found'] and book_result_ol.get('match_score', 0) >= self.searcher.similarity_threshold:
                     results['comprehensive_book_found_openlibrary'] = True
                     results['any_found'] = True
+                    results['best_match_score'] = max(results['best_match_score'], book_result_ol.get('match_score', 0))
                     if book_result_ol.get('source_url'):
                         results['verification_sources'].append({
                             'type': 'Book Comprehensive Search (Open Library)',
@@ -1334,6 +1354,7 @@ class ReferenceVerifier:
                 if book_result_gb['found'] and book_result_gb.get('match_score', 0) >= self.searcher.similarity_threshold:
                     results['comprehensive_book_found_googlebooks'] = True
                     results['any_found'] = True
+                    results['best_match_score'] = max(results['best_match_score'], book_result_gb.get('match_score', 0))
                     if book_result_gb.get('source_url'):
                         results['verification_sources'].append({
                             'type': 'Book Comprehensive Search (Google Books)',
@@ -1348,13 +1369,17 @@ class ReferenceVerifier:
             
             if website_result['accessible']:
                 results['website_accessible'] = True
-                if ref_type == 'website' or not results['any_found']:
-                    results['any_found'] = True
+                results['any_found'] = True # Website accessibility is a direct check, no match score
+                results['best_match_score'] = max(results['best_match_score'], 1.0) # Treat as perfect match for accessibility
                 results['verification_sources'].append({
                     'type': 'Website Accessibility',
                     'url': website_result.get('final_url', elements['url']),
                     'description': f"Website accessible - {website_result.get('page_title', 'No title')}"
                 })
+        
+        # Final check if nothing was found by any method and no specific reason for fake was set by the 10% rule
+        if not results['any_found'] and not results['reason_for_fake']:
+            results['reason_for_fake'] = "No strong matches found in external databases."
         
         return results
 
@@ -1555,6 +1580,11 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         st.write(ref_text)
                         
                         st.write("**This reference was found in external databases and is likely authentic, but its formatting needs correction.**")
+                        
+                        # Display the new reason if it was added for weak match
+                        if 'reason_for_fake' in result and result['reason_for_fake']:
+                            st.write(f"**Authenticity Note:** {result['reason_for_fake']}")
+
                         issues = result['structure_check'].get('structure_issues', [])
                         if issues:
                             st.write(f"**Structural problems:**")
@@ -1565,7 +1595,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         verification_sources = existence.get('verification_sources', [])
                         if verification_sources:
                             st.write("**✅ Authenticity verified via:**")
-                            for source in source_details:
+                            for source in verification_sources:
                                 source_type = source['type']
                                 source_url = source['url']
                                 description = source['description']
@@ -1574,7 +1604,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                 else:
                                     st.write(f"• **{source_type}**: {description}")
                         st.write("---")
-                        st.write("**Suggestion:** Correct the formatting issues listed above to make this reference fully compliant.")
+                        st.write("**Suggestion:** Correct the formatting issues listed above to make this reference fully compliant. You may also consider adjusting the 'Authenticity Similarity Threshold' in the sidebar if you believe this match is sufficient." ) # Added suggestion for threshold
 
                     elif status == 'content_error':
                         st.warning(f"⚠️ {type_icon} **Reference {result['line_number']}**: Content Extraction Issues")
@@ -1598,13 +1628,32 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         current_ref_type = result.get('reference_type', 'journal')
 
                         if current_ref_type == 'journal':
+                            # Always show DOI check result if it ran
                             if 'doi' in search_details:
-                                st.write(f"• DOI check: {search_details['doi'].get('reason', 'N/A')}")
-                                if 'validation_errors' in search_details['doi'] and search_details['doi']['validation_errors']:
-                                    for err in search_details['doi']['validation_errors']:
-                                        st.markdown(f"  - _{err}_")
+                                doi_check_result = search_details['doi']
+                                if not doi_check_result['valid']:
+                                    st.write(f"• DOI check: {doi_check_result.get('reason', 'N/A')}")
+                                    if 'validation_errors' in doi_check_result and doi_check_result['validation_errors']:
+                                        for err in doi_check_result['validation_errors']:
+                                            st.markdown(f"  - _{err}_")
+                                else:
+                                    st.write(f"• DOI check: Valid and matched (score: {doi_check_result.get('match_score', 0):.1%})")
+                                    if 'reason_for_fake' in existence and existence['reason_for_fake'] == "Extremely low title/journal similarity with DOI metadata.":
+                                        st.markdown(f"  - _Flagged fake due to low title similarity ({doi_check_result.get('title_similarity', 0):.1%}) or journal similarity ({doi_check_result.get('journal_similarity', 0):.1%})_")
+                            elif 'doi_reason' in search_details: # Display reason if DOI check was attempted but not valid
+                                st.write(f"• DOI check: {search_details['doi_reason']}")
+
+                            # Always show comprehensive Crossref result if it ran
                             if 'comprehensive_journal_crossref' in search_details:
-                                st.write(f"• Crossref search: {search_details['comprehensive_journal_crossref'].get('reason', 'N/A')}")
+                                crossref_search_result = search_details['comprehensive_journal_crossref']
+                                if not crossref_search_result['found']:
+                                    st.write(f"• Crossref search: {crossref_search_result.get('reason', 'N/A')}")
+                                else:
+                                    st.write(f"• Crossref search: Found and matched (score: {crossref_search_result.get('match_score', 0):.1%})")
+                                    if 'reason_for_fake' in existence and existence['reason_for_fake'] == "Extremely low title/journal similarity with Crossref search result.":
+                                        st.markdown(f"  - _Flagged fake due to low title similarity ({crossref_search_result.get('title_similarity', 0):.1%}) or journal similarity ({crossref_search_result.get('journal_similarity', 0):.1%})_")
+                            elif 'comprehensive_crossref_reason' in search_details: # Display reason if comprehensive Crossref was attempted but not found
+                                st.write(f"• Crossref search: {search_details['comprehensive_crossref_reason']}")
 
                         elif current_ref_type == 'book':
                             if 'isbn_search' in search_details:
@@ -1654,7 +1703,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
         
         **Result Categories:**
         - ✅ **Valid**: Passes authenticity and has correct formatting.
-        - ⚠️ **Authentic but Structural Format Issues**: Verified as authentic in databases, but has formatting problems that need fixing.
+        - ⚠️ **Authentic but Structural Format Issues**: Verified as authentic in databases, but has formatting problems that need fixing. This category also now includes references that are found in databases but have an authenticity match score below your set threshold.
         - ⚠️ **Content Issues**: Key information could not be reliably extracted from the reference text, preventing authenticity checks.
         - 🚨 **Likely Fake**: Well-formatted but could not be found or verified in any external database, suggesting it might be fabricated.
         """)
