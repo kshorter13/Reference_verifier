@@ -553,7 +553,7 @@ class DatabaseSearcher:
             
             # Crossref allows filtering by publication year range
             if year:
-                params['filter'] = f'from-pub-date:{int(year)-1},until-pub-date:{int(year)+1}' # Allow +/- 1 year
+                params['filter'] = f'from-pub-date:{int(year)-2},until-pub-date:{int(year)+2}' # Allow +/- 2 years
             
             response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
@@ -848,8 +848,8 @@ class DatabaseSearcher:
             
             if item_year and item_year == target_year:
                 year_match_score = 0.15
-            elif item_year and abs(int(item_year) - int(target_year)) <= 1: # Slight year tolerance
-                year_match_score = 0.075 # Half score for +/- 1 year
+            elif item_year and abs(int(item_year) - int(target_year)) <= 2: # Increased tolerance to +/- 2 years
+                year_match_score = 0.075 # Half score for +/- 2 years
             score += year_match_score
         
         # Journal matching (10% weight)
@@ -858,21 +858,13 @@ class DatabaseSearcher:
             item_journal_titles = [t.lower() for t in (item['container-title'] if isinstance(item['container-title'], list) else [item['container-title']])]
             target_journal_lower = target_journal.lower()
             
-            if any(target_journal_lower in ij for ij in item_journal_titles) or \
-               any(self._calculate_title_similarity(target_journal_lower, ij) > self.similarity_threshold for ij in item_journal_titles): # Use dynamic threshold
-                journal_match_score = 0.10
+            # Use the highest similarity found among all journal titles
+            max_journal_sim = 0.0
+            for ij in item_journal_titles:
+                max_journal_sim = max(max_journal_sim, self._calculate_title_similarity(target_journal_lower, ij))
+            
+            journal_match_score = max_journal_sim * 0.10 # Contribution is based on similarity
             score += journal_match_score
-
-        # Adjust score based on how many key elements had a decent match
-        matched_elements_count = 0
-        if title_sim > self.similarity_threshold: matched_elements_count += 1 # Use dynamic threshold
-        if author_score > self.similarity_threshold: matched_elements_count += 1 # Use dynamic threshold
-        if year_match_score > 0: matched_elements_count += 1
-        if journal_match_score > 0: matched_elements_count += 1
-
-        # Penalize if very few elements matched strongly, unless the overall score is already very high
-        if matched_elements_count < 2 and score < self.similarity_threshold: # Use dynamic threshold
-            score *= 0.7 # Reduce score if only one element is a strong match
             
         return score
 
@@ -912,7 +904,7 @@ class DatabaseSearcher:
             item_year = str(item['first_publish_year'])
             if item_year == target_year:
                 year_match_score = 0.15
-            elif abs(int(item_year) - int(target_year)) <= 1: # Allow for +/- 1 year discrepancy
+            elif abs(int(item_year) - int(target_year)) <= 2: # Increased tolerance to +/- 2 years
                 year_match_score = 0.075
             score += year_match_score
 
@@ -921,8 +913,12 @@ class DatabaseSearcher:
         if target_publisher and 'publisher' in item and item['publisher']:
             item_publishers_lower = [p.lower() for p in (item['publisher'] if isinstance(item['publisher'], list) else [item['publisher']])]
             target_publisher_lower = target_publisher.lower()
-            if any(target_publisher_lower in ip for ip in item_publishers_lower):
-                publisher_match_score = 0.05
+            
+            max_publisher_sim = 0.0
+            for ip in item_publishers_lower:
+                max_publisher_sim = max(max_publisher_sim, self._calculate_title_similarity(target_publisher_lower, ip))
+            
+            publisher_match_score = max_publisher_sim * 0.05 # Contribution is based on similarity
             score += publisher_match_score
         
         return score
@@ -962,7 +958,7 @@ class DatabaseSearcher:
             item_year = item_published_date[:4] # Take first 4 chars for year
             if item_year == target_year:
                 year_match_score = 0.15
-            elif abs(int(item_year) - int(target_year)) <= 1:
+            elif abs(int(item_year) - int(target_year)) <= 2: # Increased tolerance to +/- 2 years
                 year_match_score = 0.075
             score += year_match_score
 
@@ -971,8 +967,7 @@ class DatabaseSearcher:
         if target_publisher and item_publisher:
             # Use title similarity for publisher as well for flexibility
             pub_sim = self._calculate_title_similarity(target_publisher, item_publisher)
-            if pub_sim > self.similarity_threshold: # Use dynamic threshold
-                publisher_match_score = 0.05
+            publisher_match_score = pub_sim * 0.05 # Contribution is based on similarity
             score += publisher_match_score
         
         return score
@@ -1387,7 +1382,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         verification_sources = existence.get('verification_sources', [])
                         if verification_sources:
                             st.write("**✅ Authenticity verified via:**")
-                            for source in source_sources:
+                            for source in verification_sources:
                                 source_type = source['type']
                                 source_url = source['url']
                                 description = source['description']
