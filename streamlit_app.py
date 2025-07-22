@@ -327,7 +327,7 @@ class DatabaseSearcher:
     def check_doi_and_verify_content(self, doi: str, expected_title: str, expected_authors: str, expected_journal: str, expected_year: str) -> Dict:
         """
         Checks if a DOI resolves and if its metadata matches the expected content.
-        Performs a comprehensive match across title, authors, journal, and year.
+        Performs a comprehensive match across title, authors, journal, and year with strictness.
         """
         if not doi:
             return {'valid': False, 'reason': 'No DOI provided'}
@@ -373,29 +373,57 @@ class DatabaseSearcher:
             
             work = metadata['message']
             
-            # Step 3: Comprehensive content matching using the existing scoring function
-            match_score = self._calculate_comprehensive_match_score(work, expected_title, expected_authors, expected_year, expected_journal)
+            # Extract actual metadata from Crossref
+            actual_title = work.get('title', [''])[0] if work.get('title') else ''
+            actual_authors_list = [author.get('family', '') for author in work.get('author', []) if 'family' in author]
+            actual_journal = work.get('container-title', [''])[0] if work.get('container-title') else ''
+            actual_year = str(work.get('published-print', {}).get('date-parts', [[None]])[0][0]) if work.get('published-print') else \
+                          str(work.get('published-online', {}).get('date-parts', [[None]])[0][0]) if work.get('published-online') else ''
+
+            validation_errors = []
+
+            # --- Strict Title Match (95%) ---
+            title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
+            if expected_title and title_similarity < 0.95: # Set to 95%
+                validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
+
+            # --- Strict Author Match (95%) ---
+            expected_surnames = [re.sub(r'[^\w\s]', '', a).strip().split()[-1].lower() for a in re.split(r'[,&]', expected_authors) if re.sub(r'[^\w\s]', '', a).strip()]
+            actual_surnames = [s.lower() for s in actual_authors_list]
             
-            # Define a high threshold for DOI content match to consider it "valid"
-            if match_score < 0.85: # Require 85% match for strong DOI validation
+            author_match_count = sum(1 for es in expected_surnames if es in actual_surnames)
+            if expected_surnames and author_match_count / len(expected_surnames) < 0.95: # Set to 95%
+                validation_errors.append(f"Author mismatch (expected: {expected_surnames}, actual: {actual_surnames}, matched: {author_match_count}/{len(expected_surnames)})")
+
+            # --- Strict Journal Match (95%) ---
+            journal_sim = self._calculate_title_similarity(expected_journal.lower(), actual_journal.lower())
+            if expected_journal and journal_sim < 0.95: # Set to 95%
+                validation_errors.append(f"Journal mismatch (expected: '{expected_journal}', actual: '{actual_journal}', similarity: {journal_sim:.1%})")
+            
+            # --- Strict Year Match ---
+            if expected_year and actual_year and expected_year != actual_year:
+                validation_errors.append(f"Year mismatch (expected: {expected_year}, actual: {actual_year})")
+
+            if validation_errors:
                 return {
                     'valid': False,
-                    'reason': f'DOI resolves but content mismatch (score: {match_score:.1%})',
-                    'expected_title': expected_title,
-                    'actual_title': work.get('title', ['N/A'])[0] if work.get('title') else 'N/A',
-                    'match_score': match_score,
+                    'reason': 'Content mismatch with DOI metadata',
+                    'validation_errors': validation_errors,
                     'doi_url': doi_url,
-                    'crossref_url': crossref_url
+                    'crossref_url': crossref_url,
+                    'actual_title': actual_title,
+                    'actual_authors': actual_authors_list,
+                    'actual_journal': actual_journal,
+                    'actual_year': actual_year
                 }
             
-            # If match score is high, consider it valid and return details
             return {
                 'valid': True,
-                'match_score': match_score,
-                'actual_title': work.get('title', ['N/A'])[0] if work.get('title') else 'N/A',
-                'actual_authors': [author.get('family', '') for author in work.get('author', []) if 'family' in author],
-                'actual_journal': work.get('container-title', ['N/A'])[0] if work.get('container-title') else 'N/A',
-                'actual_year': str(work.get('published-print', {}).get('date-parts', [[None]])[0][0]) if work.get('published-print') else 'N/A',
+                'match_score': 1.0, # If all strict checks pass, it's a perfect match
+                'actual_title': actual_title,
+                'actual_authors': actual_authors_list,
+                'actual_journal': actual_journal,
+                'actual_year': actual_year,
                 'doi_url': doi_url,
                 'resolved_url': response.url,
                 'crossref_url': crossref_url
@@ -439,7 +467,7 @@ class DatabaseSearcher:
                         item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
                         similarity = self._calculate_title_similarity(title.lower(), item_title.lower())
                         
-                        if similarity > 0.6: # Threshold for exact title match
+                        if similarity > 0.95: # Changed to 95%
                             source_url = None
                             if 'DOI' in item:
                                 source_url = f"https://doi.org/{item['DOI']}"
@@ -511,7 +539,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = item
                 
-                if best_score > 0.6: # Higher threshold for comprehensive match
+                if best_score > 0.95: # Changed to 95%
                     source_url = None
                     if 'DOI' in best_match:
                         source_url = f"https://doi.org/{best_match['DOI']}"
@@ -613,7 +641,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = doc
                 
-                if best_score > 0.5: # Set a reasonable threshold for Open Library book matches
+                if best_score > 0.95: # Changed to 95%
                     return {
                         'found': True,
                         'match_score': best_score,
@@ -681,7 +709,7 @@ class DatabaseSearcher:
                         best_score = score
                         best_match = item
 
-                if best_score > 0.6: # Set a reasonable threshold for Google Books matches
+                if best_score > 0.95: # Changed to 95%
                     return {
                         'found': True,
                         'match_score': best_score,
@@ -799,19 +827,19 @@ class DatabaseSearcher:
             target_journal_lower = target_journal.lower()
             
             if any(target_journal_lower in ij for ij in item_journal_titles) or \
-               any(self._calculate_title_similarity(target_journal_lower, ij) > 0.7 for ij in item_journal_titles):
+               any(self._calculate_title_similarity(target_journal_lower, ij) > 0.95 for ij in item_journal_titles): # Changed to 95%
                 journal_match_score = 0.10
             score += journal_match_score
 
         # Adjust score based on how many key elements had a decent match
         matched_elements_count = 0
-        if title_sim > 0.6: matched_elements_count += 1
-        if author_score > 0.5: matched_elements_count += 1
+        if title_sim > 0.95: matched_elements_count += 1 # Changed to 95%
+        if author_score > 0.95: matched_elements_count += 1 # Changed to 95%
         if year_match_score > 0: matched_elements_count += 1
         if journal_match_score > 0: matched_elements_count += 1
 
         # Penalize if very few elements matched strongly, unless the overall score is already very high
-        if matched_elements_count < 2 and score < 0.7:
+        if matched_elements_count < 2 and score < 0.95: # Changed to 95%
             score *= 0.7 # Reduce score if only one element is a strong match
             
         return score
@@ -911,7 +939,7 @@ class DatabaseSearcher:
         if target_publisher and item_publisher:
             # Use title similarity for publisher as well for flexibility
             pub_sim = self._calculate_title_similarity(target_publisher, item_publisher)
-            if pub_sim > 0.6: # A reasonable similarity for publisher names
+            if pub_sim > 0.95: # Changed to 95%
                 publisher_match_score = 0.05
             score += publisher_match_score
         
@@ -1192,7 +1220,7 @@ American Heart Association. (2024). Understanding blood pressure readings. Ameri
 Australian Government Department of Health and Aged Care. (2021, July 29). Body Mass Index (BMI) and Waist Measurement. Department of Health and Aged Care. https://www.health.gov.au/topics/overweight-and-obesity/bmi-and-waist
 Coombes, J., & Skinner, T. (2014). ESSA’s student manual for health, exercise and sport assessment. Elsevier.
 Health Direct. (2019). Resting heart rate. Healthdirect.gov.au; Healthdirect Australia. https://www.healthdirect.gov.au/resting-heart-rate
-Kumar, K. (2022, January 12). What Is a Good Resting Heart Rate by Age? MedicineNet. https://www.medicinenet.com/what_is_a_good_resting_heart_rate_by_age/article.htm
+Kumar, K. (2022, January 12). What Is a Good Resting Heart Rate by Age? MedicineNet. https://www.medicinet.com/what_is_a_good_resting_heart_rate_by_age/article.htm
 Haff, G. G., & Triplett, N. T. (2016). Essentials of strength training and conditioning (4th ed.). Human Kinetics.
 Powden, C. J., Hoch, J. M., & Hoch, M. C. (2015b). Reliability and Minimal Detectable Change of the weight-bearing Lunge test: a Systematic Review. Manual Therapy, 20(4), 524–532. https://doi.org/10.1016/j.math.2015.01.004
 Ryan, C., Uthoff, A., McKenzie, C., & Cronin, J. (2022). Traditional and modified 5-0-5 change of direction test: Normative and reliability analysis. Strength & Conditioning Journal, 44(4), 22–37. https://doi.org/10.1519/SSC.0000000000000635
@@ -1349,6 +1377,9 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         if current_ref_type == 'journal':
                             if 'doi' in search_details:
                                 st.write(f"• DOI check: {search_details['doi'].get('reason', 'N/A')}")
+                                if 'validation_errors' in search_details['doi'] and search_details['doi']['validation_errors']:
+                                    for err in search_details['doi']['validation_errors']:
+                                        st.markdown(f"  - _{err}_")
                             if 'comprehensive_journal' in search_details:
                                 st.write(f"• Journal database search (Crossref): {search_details['comprehensive_journal'].get('reason', 'N/A')}")
                         elif current_ref_type == 'book':
