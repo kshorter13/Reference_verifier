@@ -509,25 +509,27 @@ class DatabaseSearcher:
             return {'valid': False, 'reason': 'No DOI provided'}
         
         try:
-            doi_url = f"https://doi.org/{doi}"
-            response = self._make_request_with_retries('head', doi_url, allow_redirects=True)
-            
-            if response.status_code != 200:
-                return {
-                    'valid': False, 
-                    'reason': f'DOI does not resolve (HTTP {response.status_code})',
-                    'doi_url': doi_url
-                }
-            
+            # First, try to get metadata from Crossref API directly
             crossref_url = f"https://api.crossref.org/works/{doi}"
             metadata_response = self._make_request_with_retries('get', crossref_url)
             
             if metadata_response.status_code != 200:
-                return {
-                    'valid': False,
-                    'reason': f'DOI found but no metadata in Crossref (HTTP {metadata_response.status_code})',
-                    'doi_url': doi_url
-                }
+                # If Crossref API fails, try the doi.org resolver (less reliable for metadata)
+                doi_url = f"https://doi.org/{doi}"
+                response = self._make_request_with_retries('head', doi_url, allow_redirects=True)
+                if response.status_code != 200:
+                    return {
+                        'valid': False, 
+                        'reason': f'DOI does not resolve (HTTP {response.status_code}) and no Crossref metadata',
+                        'doi_url': doi_url
+                    }
+                else:
+                    # Even if doi.org resolves, if Crossref API didn't work, we can't get metadata for content verification
+                    return {
+                        'valid': False,
+                        'reason': f'DOI resolves but no metadata in Crossref (HTTP {metadata_response.status_code if metadata_response else "N/A"})',
+                        'doi_url': doi_url
+                    }
             
             try:
                 metadata = metadata_response.json()
@@ -535,14 +537,14 @@ class DatabaseSearcher:
                 return {
                     'valid': False,
                     'reason': 'Invalid response from Crossref API for DOI metadata',
-                    'doi_url': doi_url
+                    'doi_url': f"https://doi.org/{doi}"
                 }
             
             if 'message' not in metadata:
                 return {
                     'valid': False,
                     'reason': 'DOI metadata not found in Crossref message',
-                    'doi_url': doi_url
+                    'doi_url': f"https://doi.org/{doi}"
                 }
             
             work = metadata['message']
@@ -611,8 +613,8 @@ class DatabaseSearcher:
                 'actual_authors': actual_authors_list,
                 'actual_journal': actual_journal,
                 'actual_year': actual_year,
-                'doi_url': doi_url,
-                'resolved_url': response.url,
+                'doi_url': f"https://doi.org/{doi}", # Always use the full URL for display
+                'resolved_url': response.url if 'response' in locals() else None, # Only if doi.org head was attempted
                 'crossref_url': crossref_url,
                 'title_similarity': title_similarity, # Return individual scores
                 'journal_similarity': journal_sim,    # Return individual scores
@@ -1016,6 +1018,7 @@ class DatabaseSearcher:
         Returns a dictionary with individual scores and the composite score.
         """
         title_sim = 0.0
+        item_title = ''
         if 'title' in item and item['title'] and target_title:
             item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
             title_sim = self._calculate_title_similarity(target_title, item_title)
@@ -1044,6 +1047,7 @@ class DatabaseSearcher:
                 year_match_score = 0.5
             
         journal_match_score = 0.0
+        item_journal_titles = [] # Initialize here to prevent UnboundLocalError
         if target_journal and 'container-title' in item and item['container-title']:
             item_journal_titles = [t.lower() for t in (item['container-title'] if isinstance(item['container-title'], list) else [item['container-title']])]
             target_journal_lower = target_journal.lower()
@@ -1271,7 +1275,7 @@ class ReferenceVerifier:
                     # Apply the 10% rule for title/journal similarity
                     if doi_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
                        doi_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
-                        results['reason_for_fake'] = "Extremely low title/journal similarity with DOI metadata."
+                        results['reason_for_fake'] = "Provided DOI points to different content (low title/journal similarity)." # More specific reason
                         # Also store the low similarities that triggered this
                         results['best_match_title_similarity'] = doi_result.get('title_similarity', 0)
                         results['best_match_journal_similarity'] = doi_result.get('journal_similarity', 0)
