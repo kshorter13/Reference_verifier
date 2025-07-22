@@ -712,6 +712,7 @@ class DatabaseSearcher:
                         'found': True,
                         'match_score': best_score,
                         'matched_title': best_match.get('title', ['Unknown'])[0] if best_match.get('title') else 'Unknown',
+                        'matched_journal': best_match.get('container-title', ['Unknown'])[0] if best_match.get('container-title') else 'Unknown', # ADDED matched_journal
                         'source_url': source_url,
                         'total_results': len(items),
                         'title_similarity': best_match_details['title_similarity'], 
@@ -958,15 +959,20 @@ class DatabaseSearcher:
             }
 
     def _calculate_title_similarity(self, title1: str, title2: str) -> float:
-        # Normalize by replacing '&' with 'and', then removing other non-alphanumeric characters and converting to lowercase
-        normalized_title1 = re.sub(r'&', 'and', title1)
-        normalized_title1 = re.sub(r'[^a-zA-Z0-9\s]', '', normalized_title1).lower()
-        
-        normalized_title2 = re.sub(r'&', 'and', title2)
-        normalized_title2 = re.sub(r'[^a-zA-Z0-9\s]', '', normalized_title2).lower()
+        # Define common stop words for more robust matching, especially for journal titles
+        stop_words = set(['a', 'an', 'the', 'and', 'or', 'of', 'in', 'on', 'for', 'with', 'to', 'from', 'at', 'by', 'as'])
 
-        words1 = set(normalized_title1.split())
-        words2 = set(normalized_title2.split())
+        def normalize(text: str) -> set:
+            # Convert '&' to 'and'
+            text = re.sub(r'&', 'and', text)
+            # Remove all non-alphanumeric characters (except spaces) and convert to lowercase
+            text = re.sub(r'[^a-zA-Z0-9\s]', '', text).lower()
+            # Split into words and filter out stop words and empty strings
+            words = [word for word in text.split() if word and word not in stop_words]
+            return set(words)
+
+        words1 = normalize(title1)
+        words2 = normalize(title2)
         
         if not words1 or not words2:
             return 0.0
@@ -1057,7 +1063,9 @@ class DatabaseSearcher:
             'title_similarity': title_sim,
             'author_score': author_score,
             'journal_similarity': journal_match_score,
-            'year_score': year_match_score
+            'year_score': year_match_score,
+            'actual_title': item_title, # Added for detailed output
+            'actual_journal': item_journal_titles[0] if item_journal_titles else '' # Added for detailed output
         }
 
     def _calculate_book_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str, parsed_expected_authors: List[Dict]) -> float:
@@ -1228,8 +1236,12 @@ class ReferenceVerifier:
             'search_details': {},
             'verification_sources': [],
             'best_match_score': 0.0,
-            'best_match_title_similarity': 0.0, # New
-            'best_match_journal_similarity': 0.0, # New
+            'best_match_title_similarity': 0.0,
+            'best_match_journal_similarity': 0.0,
+            'expected_title_for_match': elements.get('title', ''), # Store expected for display
+            'expected_journal_for_match': elements.get('journal', ''), # Store expected for display
+            'actual_title_from_match': '', # To store the title found in DB
+            'actual_journal_from_match': '', # To store the journal found in DB
             'reason_for_fake': None
         }
         
@@ -1252,11 +1264,18 @@ class ReferenceVerifier:
                 results['search_details']['doi'] = doi_result
                 
                 if doi_result['valid']: # Check if a valid response was received
+                    # Store actual data from DOI lookup
+                    results['actual_title_from_match'] = doi_result.get('actual_title', '')
+                    results['actual_journal_from_match'] = doi_result.get('actual_journal', '')
+
                     # Apply the 10% rule for title/journal similarity
                     if doi_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
                        doi_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
                         results['reason_for_fake'] = "Extremely low title/journal similarity with DOI metadata."
-                        return results # Immediately return as likely fake
+                        # Also store the low similarities that triggered this
+                        results['best_match_title_similarity'] = doi_result.get('title_similarity', 0)
+                        results['best_match_journal_similarity'] = doi_result.get('journal_similarity', 0)
+                        return results 
                     
                     # If passed 10% rule, it's considered found for authenticity
                     results['doi_valid'] = True
@@ -1285,11 +1304,17 @@ class ReferenceVerifier:
                 results['search_details']['comprehensive_journal_crossref'] = comprehensive_crossref_result
                 
                 if comprehensive_crossref_result['found']: # Check if a match was found (meaning it passed the main similarity_threshold)
+                    # Store actual data from comprehensive lookup
+                    results['actual_title_from_match'] = comprehensive_crossref_result.get('matched_title', '')
+                    results['actual_journal_from_match'] = comprehensive_crossref_result.get('matched_journal', '') # Now available
+
                     # Apply the 10% rule for title/journal similarity
                     if comprehensive_crossref_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
                        comprehensive_crossref_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
                         results['reason_for_fake'] = "Extremely low title/journal similarity with Crossref search result."
-                        return results # Immediately return as likely fake
+                        results['best_match_title_similarity'] = comprehensive_crossref_result.get('title_similarity', 0)
+                        results['best_match_journal_similarity'] = comprehensive_crossref_result.get('journal_similarity', 0)
+                        return results
 
                     # If passed 10% rule, it's considered found for authenticity
                     results['comprehensive_journal_found_crossref'] = True
@@ -1617,7 +1642,11 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         if result['reference_type'] == 'journal':
                             st.write(f"**Match Details (from best Crossref match):**")
                             st.write(f"• Overall Match Score: {result['existence_check'].get('best_match_score', 0):.1%}")
+                            st.write(f"• Expected Title: '{result['existence_check'].get('expected_title_for_match', 'N/A')}'")
+                            st.write(f"• Found Title: '{result['existence_check'].get('actual_title_from_match', 'N/A')}'")
                             st.write(f"• Title Similarity: {result['existence_check'].get('best_match_title_similarity', 0):.1%}")
+                            st.write(f"• Expected Journal: '{result['existence_check'].get('expected_journal_for_match', 'N/A')}'")
+                            st.write(f"• Found Journal: '{result['existence_check'].get('actual_journal_from_match', 'N/A')}'")
                             st.write(f"• Journal Similarity: {result['existence_check'].get('best_match_journal_similarity', 0):.1%}")
                         
                         issues = result['errors'] # This now includes the threshold message
@@ -1669,10 +1698,16 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                 if not doi_check_result['valid']:
                                     st.write(f"• DOI check: {doi_check_result.get('reason', 'N/A')}")
                                 else:
-                                    st.write(f"• DOI check: Valid DOI found, but content match was weak (Overall: {doi_check_result.get('match_score', 0):.1%}, Title: {doi_check_result.get('title_similarity', 0):.1%}, Journal: {doi_check_result.get('journal_similarity', 0):.1%})")
+                                    st.write(f"• DOI check: Valid DOI found, but content match was weak.")
+                                    st.write(f"  - Expected Title: '{result['existence_check'].get('expected_title_for_match', 'N/A')}'")
+                                    st.write(f"  - Found Title: '{result['existence_check'].get('actual_title_from_match', 'N/A')}'")
+                                    st.write(f"  - Title Similarity: {doi_check_result.get('title_similarity', 0):.1%}")
+                                    st.write(f"  - Expected Journal: '{result['existence_check'].get('expected_journal_for_match', 'N/A')}'")
+                                    st.write(f"  - Found Journal: '{result['existence_check'].get('actual_journal_from_match', 'N/A')}'")
+                                    st.write(f"  - Journal Similarity: {doi_check_result.get('journal_similarity', 0):.1%}")
                                     if 'validation_errors' in doi_check_result and doi_check_result['validation_errors']:
                                         for err in doi_check_result['validation_errors']:
-                                            st.markdown(f"  - _{err}_")
+                                            st.markdown(f"    - _{err}_")
                             elif 'doi_reason' in search_details:
                                 st.write(f"• DOI check: {search_details['doi_reason']}")
 
@@ -1682,7 +1717,13 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                 if not crossref_search_result['found']:
                                     st.write(f"• Crossref search: {crossref_search_result.get('reason', 'N/A')}")
                                 else:
-                                    st.write(f"• Crossref search: Found, but content match was weak (Overall: {crossref_search_result.get('match_score', 0):.1%}, Title: {crossref_search_result.get('title_similarity', 0):.1%}, Journal: {crossref_search_result.get('journal_similarity', 0):.1%})")
+                                    st.write(f"• Crossref search: Found, but content match was weak.")
+                                    st.write(f"  - Expected Title: '{result['existence_check'].get('expected_title_for_match', 'N/A')}'")
+                                    st.write(f"  - Found Title: '{result['existence_check'].get('actual_title_from_match', 'N/A')}'")
+                                    st.write(f"  - Title Similarity: {crossref_search_result.get('title_similarity', 0):.1%}")
+                                    st.write(f"  - Expected Journal: '{result['existence_check'].get('expected_journal_for_match', 'N/A')}'")
+                                    st.write(f"  - Found Journal: '{result['existence_check'].get('actual_journal_from_match', 'N/A')}'")
+                                    st.write(f"  - Journal Similarity: {crossref_search_result.get('journal_similarity', 0):.1%}")
                             elif 'comprehensive_crossref_reason' in search_details:
                                 st.write(f"• Crossref search: {search_details['comprehensive_crossref_reason']}")
 
