@@ -212,7 +212,7 @@ class FixedParser:
             'journal_keywords': r'([A-Z][A-Za-z\s&]*(?:Journal|Review|Science|Research|Therapy|Medicine)[A-Za-z\s]*)\s*[,\.]\s*\d+',
             'journal_general': r'([A-Z][^,\d]*[A-Za-z])\s*[,\.]\s*\d+',
             'volume_pages': r'(\d+)\s*(?:\((\d+)\))?\s*[,\.]\s*(\d+(?:[-–]\d+)?)',
-            'publisher_names': r'(Wolters Kluwer|Elsevier|MIT Press|Human Kinetics|Springer|Wiley|Academic|Press|Publishers?)',
+            'publisher_names': r'(Wolters Kluwer|Elsevier|MIT Press|Human Kinetics|Springer|Wiley|Academic Press|University Press|Cambridge|Oxford|Pearson|McGraw|Norton)',
             'access_date': r'(?:Retrieved|Accessed)\s+([^,\n]+)',
         }
         
@@ -389,6 +389,14 @@ class FixedParser:
                 
         except Exception as e:
             elements['extraction_errors'].append(f"Content extraction error: {str(e)}")
+
+        # Return highest scoring type
+        if book_score > journal_score and book_score > website_score:
+            return 'book'
+        elif website_score > journal_score and website_score > book_score:
+            return 'website'
+        else:
+            return 'journal'
 
     def _extract_journal_info(self, ref_text: str, text_after_year: str, elements: Dict) -> None:
         """Extract journal-specific information"""
@@ -984,7 +992,11 @@ Powden, C. J., Hoch, J. M., & Hoch, M. C. (2015). Reliability and Minimal Detect
                         extracted_count = 0
                         for key, value in elements.items():
                             if value and key not in ['extraction_errors', 'reference_type', 'confidence']:
-                                st.markdown(f"  • **{key.title()}**: `{value}`")
+                                # Special handling for edition info
+                                if key == 'edition':
+                                    st.markdown(f"  • **{key.title()}**: `{value}`")
+                                else:
+                                    st.markdown(f"  • **{key.title()}**: `{value}`")
                                 extracted_count += 1
                         
                         if extracted_count == 0:
