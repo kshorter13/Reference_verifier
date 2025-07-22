@@ -501,6 +501,10 @@ class DatabaseSearcher:
 
 
     def check_doi_and_verify_content(self, doi: str, expected_title: str, expected_authors: str, expected_journal: str, expected_year: str) -> Dict:
+        """
+        Checks DOI and verifies content against Crossref metadata.
+        Returns detailed match scores for title, authors, journal, year.
+        """
         if not doi:
             return {'valid': False, 'reason': 'No DOI provided'}
         
@@ -549,17 +553,11 @@ class DatabaseSearcher:
             actual_year = str(work.get('published-print', {}).get('date-parts', [[None]])[0][0]) if work.get('published-print') else \
                           str(work.get('published-online', {}).get('date-parts', [[None]])[0][0]) if work.get('published-online') else ''
 
-            validation_errors = []
-            composite_score = 0.0
-
+            # Calculate individual similarities/scores
             title_similarity = 0.0
             if expected_title and actual_title:
                 title_similarity = self._calculate_title_similarity(expected_title.lower(), actual_title.lower())
-                if title_similarity < self.similarity_threshold:
-                    validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
-                composite_score += title_similarity * 0.5 # New weight: 0.5 (50%)
 
-            # --- Author Match (15% weight) ---
             parsed_expected_authors = []
             raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', expected_authors)
             for raw_part in raw_expected_author_parts:
@@ -576,20 +574,11 @@ class DatabaseSearcher:
                 initials = ''.join(re.findall(r'[A-Za-z]', given_name)).lower()
                 if surname:
                     parsed_actual_authors.append({'surname': surname, 'initials': initials})
-
             author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_actual_authors)
-
-            if author_score < self.similarity_threshold:
-                 validation_errors.append(f"Author mismatch (expected: {expected_authors}, actual: {actual_authors_list}, score: {author_score:.1%})")
-            composite_score += author_score * 0.15 # New weight: 0.15 (15%)
-
 
             journal_sim = 0.0
             if expected_journal and actual_journal:
                 journal_sim = self._calculate_title_similarity(expected_journal.lower(), actual_journal.lower())
-                if journal_sim < self.similarity_threshold:
-                    validation_errors.append(f"Journal mismatch (expected: '{expected_journal}', actual: '{actual_journal}', similarity: {journal_sim:.1%})")
-                composite_score += journal_sim * 0.25 # New weight: 0.25 (25%)
             
             year_match_score = 0.0
             if expected_year and actual_year:
@@ -597,26 +586,26 @@ class DatabaseSearcher:
                     year_match_score = 1.0
                 elif abs(int(expected_year) - int(actual_year)) <= 2:
                     year_match_score = 0.5
-                if year_match_score < 1.0 and expected_year != actual_year:
-                     validation_errors.append(f"Year mismatch (expected: {expected_year}, actual: {actual_year})")
-                composite_score += year_match_score * 0.1 # Weight: 0.1 (10%)
-
-            if validation_errors:
-                return {
-                    'valid': False,
-                    'reason': 'Content mismatch with DOI metadata',
-                    'validation_errors': validation_errors,
-                    'doi_url': doi_url,
-                    'crossref_url': crossref_url,
-                    'actual_title': actual_title,
-                    'actual_authors': actual_authors_list,
-                    'actual_journal': actual_journal,
-                    'actual_year': actual_year,
-                    'match_score': composite_score
-                }
             
+            # Calculate composite score based on new weights
+            composite_score = (title_similarity * 0.5) + \
+                              (author_score * 0.15) + \
+                              (journal_sim * 0.25) + \
+                              (year_match_score * 0.1)
+
+            validation_errors = []
+            if title_similarity < self.similarity_threshold:
+                validation_errors.append(f"Title mismatch (expected: '{expected_title}', actual: '{actual_title}', similarity: {title_similarity:.1%})")
+            if author_score < self.similarity_threshold:
+                validation_errors.append(f"Author mismatch (expected: {expected_authors}, actual: {actual_authors_list}, score: {author_score:.1%})")
+            if journal_sim < self.similarity_threshold:
+                validation_errors.append(f"Journal mismatch (expected: '{expected_journal}', actual: '{actual_journal}', similarity: {journal_sim:.1%})")
+            if year_match_score < 1.0 and expected_year != actual_year:
+                 validation_errors.append(f"Year mismatch (expected: {expected_year}, actual: {actual_year})")
+
+
             return {
-                'valid': True,
+                'valid': True, # Assume valid for now, _verify_existence will check thresholds
                 'match_score': composite_score,
                 'actual_title': actual_title,
                 'actual_authors': actual_authors_list,
@@ -624,7 +613,12 @@ class DatabaseSearcher:
                 'actual_year': actual_year,
                 'doi_url': doi_url,
                 'resolved_url': response.url,
-                'crossref_url': crossref_url
+                'crossref_url': crossref_url,
+                'title_similarity': title_similarity, # Return individual scores
+                'journal_similarity': journal_sim,    # Return individual scores
+                'author_score': author_score,
+                'year_score': year_match_score,
+                'validation_errors': validation_errors # Still useful for detailed feedback
             }
             
         except requests.exceptions.RequestException as e:
@@ -640,54 +634,11 @@ class DatabaseSearcher:
                 'doi_url': f"https://doi.org/{doi}" if doi else None
             }
 
-    def search_by_exact_title(self, title: str) -> Dict:
-        if not title or len(title.strip()) < 10:
-            return {'found': False, 'reason': 'Title too short for reliable search'}
-        
-        try:
-            url = "https://api.crossref.org/works"
-            params = {
-                'query.title': title,
-                'rows': 5,
-                'select': 'title,author,DOI,URL'
-            }
-            
-            response = self._make_request_with_retries('get', url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'message' in data and 'items' in data['message']:
-                items = data['message']['items']
-                
-                for item in items:
-                    if 'title' in item and item['title']:
-                        item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
-                        similarity = self._calculate_title_similarity(title.lower(), item_title.lower())
-                        
-                        if similarity > self.similarity_threshold:
-                            source_url = None
-                            if 'DOI' in item:
-                                source_url = f"https://doi.org/{item['DOI']}"
-                            elif 'URL' in item:
-                                source_url = item['URL']
-                            
-                            return {
-                                'found': True,
-                                'similarity': similarity,
-                                'matched_title': item_title,
-                                'source_url': source_url
-                            }
-                
-                return {'found': False, 'reason': 'No close title matches found'}
-            
-            return {'found': False, 'reason': 'No results from title search'}
-            
-        except Exception as e:
-            return {'found': False, 'reason': f'Title search error: {str(e)}'}
-
     def search_comprehensive(self, authors: str, title: str, year: str, journal: str) -> Dict:
-        # Initialize parsed_expected_authors here
+        """
+        Performs a comprehensive search on Crossref.
+        Returns detailed match scores for title, authors, journal, year.
+        """
         parsed_expected_authors = []
         raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
         for raw_part in raw_expected_author_parts:
@@ -704,7 +655,6 @@ class DatabaseSearcher:
                 title_words = re.findall(r'\b[a-zA-Z]{4,}\b', title)[:4]
                 query_parts.extend(title_words)
             
-            # Use parsed authors for query parts
             parsed_authors_for_query = []
             raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
             for raw_part in raw_query_author_parts:
@@ -714,7 +664,7 @@ class DatabaseSearcher:
                     if parsed_author and parsed_author['surname'] and len(parsed_author['surname']) > 2:
                         parsed_authors_for_query.append(parsed_author['surname'])
             if parsed_authors_for_query:
-                query_parts.extend(parsed_authors_for_query[:2]) # Add up to 2 surnames to query
+                query_parts.extend(parsed_authors_for_query[:2])
 
             if not query_parts:
                 return {'found': False, 'reason': 'Insufficient search terms'}
@@ -742,13 +692,16 @@ class DatabaseSearcher:
                 best_score = 0.0
                 
                 for item in items:
-                    # Pass parsed_expected_authors to _calculate_comprehensive_match_score
-                    score = self._calculate_comprehensive_match_score(item, title, authors, year, journal, parsed_expected_authors)
-                    if score > best_score:
-                        best_score = score
+                    # _calculate_comprehensive_match_score now returns individual scores too
+                    score_details = self._calculate_comprehensive_match_score(item, title, authors, year, journal, parsed_expected_authors)
+                    current_composite_score = score_details['composite_score']
+
+                    if current_composite_score > best_score:
+                        best_score = current_composite_score
                         best_match = item
+                        best_match_details = score_details # Store the detailed scores
                 
-                if best_score > self.similarity_threshold:
+                if best_match:
                     source_url = None
                     if 'DOI' in best_match:
                         source_url = f"https://doi.org/{best_match['DOI']}"
@@ -760,7 +713,11 @@ class DatabaseSearcher:
                         'match_score': best_score,
                         'matched_title': best_match.get('title', ['Unknown'])[0] if best_match.get('title') else 'Unknown',
                         'source_url': source_url,
-                        'total_results': len(items)
+                        'total_results': len(items),
+                        'title_similarity': best_match_details['title_similarity'], # Pass through
+                        'journal_similarity': best_match_details['journal_similarity'], # Pass through
+                        'author_score': best_match_details['author_score'],
+                        'year_score': best_match_details['year_score']
                     }
                 else:
                     return {
@@ -773,256 +730,6 @@ class DatabaseSearcher:
             
         except Exception as e:
             return {'found': False, 'reason': f'Search error: {str(e)}'}
-
-    def search_pubmed(self, title: str, authors: str, year: str) -> Dict:
-        """
-        Searches PubMed using NCBI E-utilities.
-        Note: PubMed API usage limits apply. No API key required for basic use.
-        """
-        if not title and not authors:
-            return {'found': False, 'reason': 'Insufficient search terms for PubMed'}
-
-        try:
-            # Constructing the search query for PubMed
-            query_parts = []
-            if title:
-                query_parts.append(f"{title}[Title]")
-            
-            parsed_authors_for_query = []
-            raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
-            for raw_part in raw_query_author_parts:
-                cleaned_part = raw_part.strip()
-                if cleaned_part:
-                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                    if parsed_author and parsed_author['surname']:
-                        parsed_authors_for_query.append(parsed_author['surname'])
-            if parsed_authors_for_query:
-                query_parts.append(f"{' '.join(parsed_authors_for_query)}[Author]")
-
-            if year:
-                query_parts.append(f"{year}[pdat]") # Publication date
-
-            search_query = " AND ".join(query_parts)
-            
-            # Step 1: Search for IDs
-            esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
-            esearch_params = {
-                'db': 'pubmed',
-                'term': search_query,
-                'retmax': 5, # Retrieve up to 5 results
-                'retmode': 'json'
-            }
-            esearch_response = self._make_request_with_retries('get', esearch_url, params=esearch_params)
-            esearch_response.raise_for_status()
-            esearch_data = esearch_response.json()
-
-            if 'esearchresult' not in esearch_data or not esearch_data['esearchresult'].get('idlist'):
-                return {'found': False, 'reason': 'No matching articles found in PubMed.'}
-
-            id_list = esearch_data['esearchresult']['idlist']
-            if not id_list:
-                return {'found': False, 'reason': 'No matching articles found in PubMed.'}
-
-            # Step 2: Fetch details for the found IDs
-            efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-            efetch_params = {
-                'db': 'pubmed',
-                'id': ",".join(id_list),
-                'retmode': 'xml', # Request XML to parse details
-                'rettype': 'abstract'
-            }
-            efetch_response = self._make_request_with_retries('get', efetch_url, params=efetch_params)
-            efetch_response.raise_for_status()
-            
-            xml_text = efetch_response.text
-            
-            best_match = None
-            best_score = 0.0
-            
-            articles = re.findall(r'<PubmedArticle>(.*?)</PubmedArticle>', xml_text, re.DOTALL)
-            
-            for article_xml in articles:
-                item_title = re.search(r'<ArticleTitle>(.*?)</ArticleTitle>', article_xml, re.DOTALL)
-                item_title = item_title.group(1).strip() if item_title else ''
-
-                # Parse authors from PubMed XML into surname/initials dicts
-                parsed_item_authors = []
-                author_list_match = re.search(r'<AuthorList.*?>(.*?)</AuthorList>', article_xml, re.DOTALL)
-                if author_list_match:
-                    author_tags = re.findall(r'<Author.*?>(.*?)</Author>', author_list_match.group(1), re.DOTALL)
-                    for author_tag in author_tags:
-                        surname = re.search(r'<LastName>(.*?)</LastName>', author_tag)
-                        surname = surname.group(1).strip() if surname else ''
-                        fore_name = re.search(r'<ForeName>(.*?)</ForeName>', author_tag)
-                        fore_name = fore_name.group(1).strip() if fore_name else ''
-                        initials_tag = re.search(r'<Initials>(.*?)</Initials>', author_tag)
-                        initials_val = initials_tag.group(1).strip() if initials_tag else ''
-
-                        if surname:
-                            initials_for_author = initials_val if initials_val else ''.join(re.findall(r'[A-Za-z]', fore_name)).lower()
-                            parsed_item_authors.append({'surname': surname.lower(), 'initials': initials_for_author})
-
-                item_journal = re.search(r'<Journal><Title>(.*?)</Title>', article_xml, re.DOTALL)
-                item_journal = item_journal.group(1).strip() if item_journal else ''
-
-                item_year = re.search(r'<PubDate><Year>(\d{4})</Year>', article_xml)
-                item_year = item_year.group(1) if item_year else ''
-
-                item_doi = re.search(r'<ArticleId IdType="doi">(.*?)</ArticleId>', article_xml)
-                item_doi = item_doi.group(1) if item_doi else ''
-                
-                # Prepare parsed_expected_authors for scoring
-                parsed_expected_authors = []
-                raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
-                for raw_part in raw_expected_author_parts:
-                    cleaned_part = raw_part.strip()
-                    if cleaned_part:
-                        parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                        if parsed_author:
-                            parsed_expected_authors.append(parsed_author)
-
-                score = self._calculate_pubmed_match_score(
-                    item_title, parsed_item_authors, item_journal, item_year, # Pass parsed_item_authors
-                    title, authors, year, parsed_expected_authors
-                )
-
-                if score > best_score:
-                    best_score = score
-                    best_match = {
-                        'title': item_title,
-                        'authors': [a['surname'] for a in parsed_item_authors], # Store just surnames for display
-                        'journal': item_journal,
-                        'year': item_year,
-                        'doi': item_doi,
-                        'pubmed_id': re.search(r'<PMID Version="\d+">(\d+)</PMID>', article_xml).group(1) if re.search(r'<PMID Version="\d+">(\d+)</PMID>', article_xml) else None
-                    }
-            
-            if best_match and best_score >= self.similarity_threshold:
-                source_url = f"https://pubmed.ncbi.nlm.nih.gov/{best_match['pubmed_id']}/" if best_match.get('pubmed_id') else None
-                return {
-                    'found': True,
-                    'match_score': best_score,
-                    'matched_title': best_match['title'],
-                    'matched_authors': best_match['authors'],
-                    'matched_journal': best_match['journal'],
-                    'matched_year': best_match['year'],
-                    'source_url': source_url,
-                    'total_results': len(articles)
-                }
-            
-            return {'found': False, 'reason': f'No strong PubMed match (best score: {best_score:.2f})'}
-
-        except requests.exceptions.RequestException as e:
-            return {'found': False, 'reason': f'PubMed network error: {str(e)}'}
-        except Exception as e:
-            return {'found': False, 'reason': f'PubMed search error: {str(e)}'}
-
-    def search_semantic_scholar(self, title: str, authors: str, year: str) -> Dict:
-        """
-        Searches Semantic Scholar API.
-        Note: Semantic Scholar has rate limits. An API key is recommended for higher usage.
-        """
-        if not title and not authors:
-            return {'found': False, 'reason': 'Insufficient search terms for Semantic Scholar'}
-
-        try:
-            query_parts = []
-            if title:
-                query_parts.append(title)
-            
-            parsed_authors_for_query = []
-            raw_query_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
-            for raw_part in raw_query_author_parts:
-                cleaned_part = raw_part.strip()
-                if cleaned_part:
-                    parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                    if parsed_author and parsed_author['surname']:
-                        parsed_authors_for_query.append(parsed_author['surname'])
-            if parsed_authors_for_query:
-                query_parts.append(" ".join(parsed_authors_for_query))
-
-            query = " ".join(query_parts)
-            
-            url = "https://api.semanticscholar.org/graph/v1/paper/search"
-            params = {
-                'query': query,
-                'fields': 'title,authors,venue,year,externalIds', # Request relevant fields
-                'limit': 5 # Retrieve up to 5 results
-            }
-            # Add API key if available (e.g., if user provides it via Streamlit secrets)
-            # headers = {'x-api-key': 'YOUR_SEMANTIC_SCHOLAR_API_KEY'} 
-            # response = self._make_request_with_retries('get', url, params=params, headers=headers)
-            response = self._make_request_with_retries('get', url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if 'data' not in data or not data['data']:
-                return {'found': False, 'reason': 'No matching articles found in Semantic Scholar.'}
-
-            best_match = None
-            best_score = 0.0
-            
-            for item in data['data']:
-                item_title = item.get('title', '')
-                
-                # Parse Semantic Scholar authors into surname/initials format
-                parsed_item_authors = []
-                for author_data_ss in item.get('authors', []):
-                    full_name_ss = author_data_ss.get('name', '')
-                    parsed_author_ss = ReferenceParser()._extract_author_parts(full_name_ss)
-                    if parsed_author_ss:
-                        parsed_item_authors.append(parsed_author_ss)
-
-                item_venue = item.get('venue', '') # Journal/conference name
-                item_year = str(item.get('year', ''))
-                item_doi = item.get('externalIds', {}).get('DOI', '')
-                
-                # Prepare parsed_expected_authors for scoring
-                parsed_expected_authors = []
-                raw_expected_author_parts = re.split(r',\s*|&\s*|and\s*', authors)
-                for raw_part in raw_expected_author_parts:
-                    cleaned_part = raw_part.strip()
-                    if cleaned_part:
-                        parsed_author = ReferenceParser()._extract_author_parts(cleaned_part)
-                        if parsed_author:
-                            parsed_expected_authors.append(parsed_author)
-
-                score = self._calculate_semantic_scholar_match_score(
-                    item_title, parsed_item_authors, item_venue, item_year, # Pass parsed_item_authors
-                    title, authors, year, parsed_expected_authors
-                )
-
-                if score > best_score:
-                    best_score = score
-                    best_match = {
-                        'title': item_title,
-                        'authors': [a.get('name', '') for a in item.get('authors', [])], # Store original full names for display
-                        'journal': item_venue,
-                        'year': item_year,
-                        'doi': item_doi,
-                        's2id': item.get('paperId')
-                    }
-            
-            if best_match and best_score >= self.similarity_threshold:
-                source_url = f"https://www.semanticscholar.org/paper/{best_match['s2id']}" if best_match.get('s2id') else None
-                return {
-                    'found': True,
-                    'match_score': best_score,
-                    'matched_title': best_match['title'],
-                    'matched_authors': best_match['authors'],
-                    'matched_journal': best_match['journal'],
-                    'matched_year': best_match['year'],
-                    'source_url': source_url,
-                    'total_results': len(data['data'])
-                }
-            
-            return {'found': False, 'reason': f'No strong Semantic Scholar match (best score: {best_score:.2f})'}
-
-        except requests.exceptions.RequestException as e:
-            return {'found': False, 'reason': f'Semantic Scholar network error: {str(e)}'}
-        except Exception as e:
-            return {'found': False, 'reason': f'Semantic Scholar search error: {str(e)}'}
 
 
     def search_books_isbn(self, isbn: str) -> Dict:
@@ -1297,16 +1004,16 @@ class DatabaseSearcher:
         author_score += (initial_bonus / len(parsed_expected_authors)) * 0.1 # Small bonus for initials
         return min(author_score, 1.0) # Cap score at 1.0
 
-    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors_str: str, target_year: str, target_journal: str, parsed_expected_authors: List[Dict]) -> float:
-        score = 0.0
-        
+    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors_str: str, target_year: str, target_journal: str, parsed_expected_authors: List[Dict]) -> Dict:
+        """
+        Calculates a comprehensive match score for Crossref results.
+        Returns a dictionary with individual scores and the composite score.
+        """
         title_sim = 0.0
         if 'title' in item and item['title'] and target_title:
             item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
             title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.5 # New weight: 0.5 (50%)
         
-        # --- Author Matching (15% weight) ---
         parsed_item_authors = []
         if 'author' in item and item['author']:
             for author_data in item['author']:
@@ -1315,9 +1022,7 @@ class DatabaseSearcher:
                 initials = ''.join(re.findall(r'[A-Za-z]', given_name)).lower()
                 if surname:
                     parsed_item_authors.append({'surname': surname, 'initials': initials})
-
         author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.15 # New weight: 0.15 (15%)
         
         year_match_score = 0.0
         if target_year:
@@ -1331,7 +1036,6 @@ class DatabaseSearcher:
                 year_match_score = 1.0
             elif item_year and abs(int(item_year) - int(target_year)) <= 2:
                 year_match_score = 0.5
-            score += year_match_score * 0.1 # Weight: 0.1 (10%)
             
         journal_match_score = 0.0
         if target_journal and 'container-title' in item and item['container-title']:
@@ -1341,67 +1045,20 @@ class DatabaseSearcher:
             max_journal_sim = 0.0
             for ij in item_journal_titles:
                 max_journal_sim = max(max_journal_sim, self._calculate_title_similarity(target_journal_lower, ij))
+            journal_match_score = max_journal_sim
             
-            journal_match_score = max_journal_sim * 0.25 # New weight: 0.25 (25%)
-            score += journal_match_score
-            
-        return score
-
-    def _calculate_pubmed_match_score(self, item_title: str, parsed_item_authors: List[Dict], item_journal: str, item_year: str,
-                                      target_title: str, target_authors_str: str, target_year: str, parsed_expected_authors: List[Dict]) -> float:
-        score = 0.0
-
-        title_sim = 0.0
-        if item_title and target_title:
-            title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.5 # New weight: 0.5 (50%)
-
-        # --- Author Matching (15% weight) ---
-        author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.15 # New weight: 0.15 (15%)
-
-        year_match_score = 0.0
-        if target_year and item_year:
-            if item_year == target_year:
-                year_match_score = 1.0
-            elif abs(int(item_year) - int(target_year)) <= 2:
-                year_match_score = 0.5
-            score += year_match_score * 0.1 # Weight: 0.1 (10%)
-
-        journal_match_score = 0.0
-        if target_journal and item_journal:
-            journal_match_score = self._calculate_title_similarity(target_journal, item_journal)
-            score += journal_match_score * 0.25 # New weight: 0.25 (25%)
+        composite_score = (title_sim * 0.5) + \
+                          (author_score * 0.15) + \
+                          (journal_match_score * 0.25) + \
+                          (year_match_score * 0.1)
         
-        return score
-
-    def _calculate_semantic_scholar_match_score(self, item_title: str, parsed_item_authors: List[Dict], item_venue: str, item_year: str,
-                                                target_title: str, target_authors_str: str, target_year: str, parsed_expected_authors: List[Dict]) -> float:
-        score = 0.0
-
-        title_sim = 0.0
-        if item_title and target_title:
-            title_sim = self._calculate_title_similarity(target_title, item_title)
-            score += title_sim * 0.5 # New weight: 0.5 (50%)
-
-        # --- Author Matching (15% weight) ---
-        author_score = self._calculate_author_match_score(parsed_expected_authors, parsed_item_authors)
-        score += author_score * 0.15 # New weight: 0.15 (15%)
-
-        year_match_score = 0.0
-        if target_year and item_year:
-            if item_year == target_year:
-                year_match_score = 1.0
-            elif abs(int(item_year) - int(target_year)) <= 2:
-                year_match_score = 0.5
-            score += year_match_score * 0.1 # Weight: 0.1 (10%)
-
-        journal_match_score = 0.0
-        if target_journal and item_venue: # Corrected: target_journal instead of target_venue
-            journal_match_score = self._calculate_title_similarity(target_journal, item_venue)
-            score += journal_match_score * 0.25 # New weight: 0.25 (25%)
-        
-        return score
+        return {
+            'composite_score': composite_score,
+            'title_similarity': title_sim,
+            'author_score': author_score,
+            'journal_similarity': journal_match_score,
+            'year_score': year_match_score
+        }
 
     def _calculate_book_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_publisher: str, parsed_expected_authors: List[Dict]) -> float:
         score = 0.0
@@ -1551,10 +1208,7 @@ class ReferenceVerifier:
         results = {
             'any_found': False,
             'doi_valid': False,
-            'title_found': False,
             'comprehensive_journal_found_crossref': False,
-            'comprehensive_journal_found_pubmed': False, # New field
-            'comprehensive_journal_found_semanticscholar': False, # New field
             'isbn_found': False,
             'comprehensive_book_found_openlibrary': False,
             'comprehensive_book_found_googlebooks': False,
@@ -1565,65 +1219,44 @@ class ReferenceVerifier:
         
         ref_type = elements.get('reference_type', 'journal')
         
-        # Try DOI first (most definitive for journals)
-        if elements.get('doi'):
-            doi_result = self.searcher.check_doi_and_verify_content(
-                elements.get('doi', ''), 
-                elements.get('title', ''),
-                elements.get('authors', ''),
-                elements.get('journal', ''),
-                elements.get('year', '')
-            )
-            results['search_details']['doi'] = doi_result
-            
-            if doi_result['valid'] and doi_result.get('match_score', 0) >= self.searcher.similarity_threshold:
-                results['doi_valid'] = True
-                results['any_found'] = True
-                if doi_result.get('doi_url'):
-                    results['verification_sources'].append({
-                        'type': 'DOI (Comprehensive Match)',
-                        'url': doi_result['doi_url'],
-                        'description': f"DOI verified with {doi_result.get('match_score', 0):.1%} content match"
-                    })
+        # Threshold for flagging as fake due to extremely low title/journal similarity
+        LOW_SIMILARITY_FAKE_THRESHOLD = 0.10 # 10%
 
-        # If it's a journal and DOI didn't work or wasn't present, try other journal databases
-        if ref_type == 'journal' and not results['any_found']:
-            # Try Semantic Scholar
-            semantic_scholar_result = self.searcher.search_semantic_scholar(
-                elements.get('title', ''),
-                elements.get('authors', ''),
-                elements.get('year', '')
-            )
-            results['search_details']['comprehensive_journal_semanticscholar'] = semantic_scholar_result
-            if semantic_scholar_result['found']:
-                results['comprehensive_journal_found_semanticscholar'] = True
-                results['any_found'] = True
-                if semantic_scholar_result.get('source_url'):
-                    results['verification_sources'].append({
-                        'type': 'Journal Comprehensive Search (Semantic Scholar)',
-                        'url': semantic_scholar_result['source_url'],
-                        'description': f"Multi-element match (confidence: {semantic_scholar_result.get('match_score', 0):.1%})"
-                    })
-
-            # If still not found, try PubMed
-            if not results['any_found']:
-                pubmed_result = self.searcher.search_pubmed(
+        # Journal-specific searches (Crossref only)
+        if ref_type == 'journal':
+            # Try DOI first (most definitive for journals)
+            if elements.get('doi'):
+                doi_result = self.searcher.check_doi_and_verify_content(
+                    elements.get('doi', ''), 
                     elements.get('title', ''),
                     elements.get('authors', ''),
+                    elements.get('journal', ''),
                     elements.get('year', '')
                 )
-                results['search_details']['comprehensive_journal_pubmed'] = pubmed_result
-                if pubmed_result['found']:
-                    results['comprehensive_journal_found_pubmed'] = True
-                    results['any_found'] = True
-                    if pubmed_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'Journal Comprehensive Search (PubMed)',
-                            'url': pubmed_result['source_url'],
-                            'description': f"Multi-element match (confidence: {pubmed_result.get('match_score', 0):.1%})"
-                        })
+                results['search_details']['doi'] = doi_result
+                
+                if doi_result['valid']: # Check if a valid response was received
+                    # Apply the 10% rule for title/journal similarity
+                    if doi_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
+                       doi_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
+                        results['any_found'] = False
+                        results['reason_for_fake'] = "Extremely low title/journal similarity with DOI metadata."
+                        return results # Immediately return as likely fake
+                    
+                    # If passed 10% rule, check against general similarity threshold
+                    if doi_result.get('match_score', 0) >= self.searcher.similarity_threshold:
+                        results['doi_valid'] = True
+                        results['any_found'] = True
+                        if doi_result.get('doi_url'):
+                            results['verification_sources'].append({
+                                'type': 'DOI (Comprehensive Match)',
+                                'url': doi_result['doi_url'],
+                                'description': f"DOI verified with {doi_result.get('match_score', 0):.1%} content match"
+                            })
+                else:
+                    results['search_details']['doi_reason'] = doi_result.get('reason', 'Unknown DOI error')
 
-            # Finally, try comprehensive Crossref search if others failed
+            # If not found by DOI or DOI check failed, try comprehensive Crossref search
             if not results['any_found']:
                 comprehensive_crossref_result = self.searcher.search_comprehensive(
                     elements.get('authors', ''),
@@ -1632,15 +1265,27 @@ class ReferenceVerifier:
                     elements.get('journal', '')
                 )
                 results['search_details']['comprehensive_journal_crossref'] = comprehensive_crossref_result
-                if comprehensive_crossref_result['found']:
-                    results['comprehensive_journal_found_crossref'] = True
-                    results['any_found'] = True
-                    if comprehensive_crossref_result.get('source_url'):
-                        results['verification_sources'].append({
-                            'type': 'Journal Comprehensive Search (Crossref)',
-                            'url': comprehensive_crossref_result['source_url'],
-                            'description': f"Multi-element match (confidence: {comprehensive_crossref_result.get('match_score', 0):.1%})"
-                        })
+                
+                if comprehensive_crossref_result['found']: # Check if a match was found
+                    # Apply the 10% rule for title/journal similarity
+                    if comprehensive_crossref_result.get('title_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD or \
+                       comprehensive_crossref_result.get('journal_similarity', 0) < LOW_SIMILARITY_FAKE_THRESHOLD:
+                        results['any_found'] = False
+                        results['reason_for_fake'] = "Extremely low title/journal similarity with Crossref search result."
+                        return results # Immediately return as likely fake
+
+                    # If passed 10% rule, check against general similarity threshold
+                    if comprehensive_crossref_result.get('match_score', 0) >= self.searcher.similarity_threshold:
+                        results['comprehensive_journal_found_crossref'] = True
+                        results['any_found'] = True
+                        if comprehensive_crossref_result.get('source_url'):
+                            results['verification_sources'].append({
+                                'type': 'Journal Comprehensive Search (Crossref)',
+                                'url': comprehensive_crossref_result['source_url'],
+                                'description': f"Multi-element match (confidence: {comprehensive_crossref_result.get('match_score', 0):.1%})"
+                            })
+                else:
+                    results['search_details']['comprehensive_crossref_reason'] = comprehensive_crossref_result.get('reason', 'Unknown Crossref error')
         
         # Book-specific searches
         elif ref_type == 'book':
@@ -1667,7 +1312,7 @@ class ReferenceVerifier:
                 )
                 results['search_details']['comprehensive_book_openlibrary'] = book_result_ol
                 
-                if book_result_ol['found']:
+                if book_result_ol['found'] and book_result_ol.get('match_score', 0) >= self.searcher.similarity_threshold:
                     results['comprehensive_book_found_openlibrary'] = True
                     results['any_found'] = True
                     if book_result_ol.get('source_url'):
@@ -1686,7 +1331,7 @@ class ReferenceVerifier:
                 )
                 results['search_details']['comprehensive_book_googlebooks'] = book_result_gb
 
-                if book_result_gb['found']:
+                if book_result_gb['found'] and book_result_gb.get('match_score', 0) >= self.searcher.similarity_threshold:
                     results['comprehensive_book_found_googlebooks'] = True
                     results['any_found'] = True
                     if book_result_gb.get('source_url'):
@@ -1748,7 +1393,7 @@ def main():
     
     st.sidebar.markdown("---")
     st.sidebar.markdown("**📋 Supported Types:**")
-    st.sidebar.markdown("📄 **Journals**: DOI, Crossref, PubMed, Semantic Scholar") # Updated
+    st.sidebar.markdown("📄 **Journals**: DOI, Crossref") # Updated
     st.sidebar.markdown("📚 **Books**: ISBN, Open Library, Google Books")
     st.sidebar.markdown("🌐 **Websites**: URL accessibility")
     
@@ -1920,7 +1565,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         verification_sources = existence.get('verification_sources', [])
                         if verification_sources:
                             st.write("**✅ Authenticity verified via:**")
-                            for source in verification_sources:
+                            for source in source_details:
                                 source_type = source['type']
                                 source_url = source['url']
                                 description = source['description']
@@ -1942,9 +1587,12 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         
                         existence = result['existence_check']
                         search_details = existence.get('search_details', {})
-                        extracted_elements = result['extracted_elements']
                         
                         st.write(f"**⚠️ This reference could not be verified in external databases and appears to be fabricated or contains significant errors.**")
+                        
+                        if 'reason_for_fake' in existence:
+                            st.write(f"**Specific Reason:** {existence['reason_for_fake']}")
+
                         st.write("**Details of failed authenticity checks:**")
                         
                         current_ref_type = result.get('reference_type', 'journal')
@@ -1955,10 +1603,6 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                                 if 'validation_errors' in search_details['doi'] and search_details['doi']['validation_errors']:
                                     for err in search_details['doi']['validation_errors']:
                                         st.markdown(f"  - _{err}_")
-                            if 'comprehensive_journal_semanticscholar' in search_details:
-                                st.write(f"• Semantic Scholar search: {search_details['comprehensive_journal_semanticscholar'].get('reason', 'N/A')}")
-                            if 'comprehensive_journal_pubmed' in search_details:
-                                st.write(f"• PubMed search: {search_details['comprehensive_journal_pubmed'].get('reason', 'N/A')}")
                             if 'comprehensive_journal_crossref' in search_details:
                                 st.write(f"• Crossref search: {search_details['comprehensive_journal_crossref'].get('reason', 'N/A')}")
 
@@ -1998,7 +1642,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
         
         **Level 3: Existence Verification (Authenticity)** 🚨 (Happens Second)
         - **This is the primary authenticity check.**
-        - **Journals**: DOI validation (now with comprehensive content matching), Crossref searches (matching authors, title, journal, year), **PubMed**, and **Semantic Scholar**.
+        - **Journals**: DOI validation (now with comprehensive content matching) and Crossref searches (matching authors, title, journal, year). **A reference will be flagged as 'Likely Fake' if the similarity of its title or journal with a database entry is below 10%, regardless of other matches.**
         - **Books**: ISBN lookup via Open Library, comprehensive book search via Open Library and Google Books (matching authors, title, publisher, year).
         - **Websites**: URL accessibility checking.
         - **Identifies likely fake references**: If no strong matches are found across multiple key data points in reputable databases.
