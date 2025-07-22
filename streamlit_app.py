@@ -324,6 +324,37 @@ class DatabaseSearcher:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
         self.similarity_threshold = similarity_threshold # Store the threshold
+        self.max_retries = 3 # Max retries for API calls
+        self.timeout = 20 # Increased timeout to 20 seconds
+
+    def _make_request_with_retries(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Helper to make requests with retries and exponential backoff."""
+        for attempt in range(self.max_retries):
+            try:
+                if method == 'get':
+                    response = self.session.get(url, timeout=self.timeout, **kwargs)
+                elif method == 'head':
+                    response = self.session.head(url, timeout=self.timeout, **kwargs)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+
+                # Retry on server errors or timeouts
+                if response.status_code >= 500 or response.status_code == 408: # 408 Request Timeout
+                    st.warning(f"Attempt {attempt + 1}/{self.max_retries}: Server error or timeout ({response.status_code}) for {url}. Retrying...")
+                    time.sleep(2 ** attempt) # Exponential backoff
+                    continue
+                return response
+            except requests.exceptions.Timeout as e:
+                st.warning(f"Attempt {attempt + 1}/{self.max_retries}: Request timed out for {url}: {e}. Retrying...")
+                time.sleep(2 ** attempt) # Exponential backoff
+            except requests.exceptions.RequestException as e:
+                # For other request exceptions, re-raise immediately if not a timeout
+                if attempt == self.max_retries - 1:
+                    raise e
+                st.warning(f"Attempt {attempt + 1}/{self.max_retries}: Network error for {url}: {e}. Retrying...")
+                time.sleep(2 ** attempt) # Exponential backoff
+        raise requests.exceptions.RequestException(f"Failed after {self.max_retries} attempts for {url}")
+
 
     def check_doi_and_verify_content(self, doi: str, expected_title: str, expected_authors: str, expected_journal: str, expected_year: str) -> Dict:
         """
@@ -336,7 +367,7 @@ class DatabaseSearcher:
         try:
             # Step 1: Check if DOI resolves
             doi_url = f"https://doi.org/{doi}"
-            response = self.session.head(doi_url, timeout=10, allow_redirects=True)
+            response = self._make_request_with_retries('head', doi_url, allow_redirects=True)
             
             if response.status_code != 200:
                 return {
@@ -347,7 +378,7 @@ class DatabaseSearcher:
             
             # Step 2: Get metadata from Crossref API
             crossref_url = f"https://api.crossref.org/works/{doi}"
-            metadata_response = self.session.get(crossref_url, timeout=15)
+            metadata_response = self._make_request_with_retries('get', crossref_url)
             
             if metadata_response.status_code != 200:
                 return {
@@ -455,7 +486,7 @@ class DatabaseSearcher:
                 'select': 'title,author,DOI,URL'
             }
             
-            response = self.session.get(url, params=params, timeout=15)
+            response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -524,7 +555,7 @@ class DatabaseSearcher:
             if year:
                 params['filter'] = f'from-pub-date:{int(year)-1},until-pub-date:{int(year)+1}' # Allow +/- 1 year
             
-            response = self.session.get(url, params=params, timeout=15)
+            response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -580,7 +611,7 @@ class DatabaseSearcher:
                 'jscmd': 'data'
             }
             
-            response = self.session.get(url, params=params, timeout=15)
+            response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -627,7 +658,7 @@ class DatabaseSearcher:
                 'limit': 10 # Increase limit to get more potential matches
             }
             
-            response = self.session.get(url, params=params, timeout=15)
+            response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -684,7 +715,7 @@ class DatabaseSearcher:
                 'maxResults': 10 # Fetch more results to find the best match
             }
 
-            response = self.session.get(url, params=params, timeout=15)
+            response = self._make_request_with_retries('get', url, params=params)
             response.raise_for_status()
 
             data = response.json()
@@ -736,7 +767,7 @@ class DatabaseSearcher:
                 url = 'https://' + url
             
             # Use a GET request to potentially retrieve title, but HEAD is faster for just accessibility
-            response = self.session.get(url, timeout=10, allow_redirects=True)
+            response = self._make_request_with_retries('get', url)
             
             if response.status_code == 200:
                 page_title_match = re.search(r'<title>(.*?)</title>', response.text, re.IGNORECASE | re.DOTALL)
@@ -1356,7 +1387,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                         verification_sources = existence.get('verification_sources', [])
                         if verification_sources:
                             st.write("**✅ Authenticity verified via:**")
-                            for source in verification_sources:
+                            for source in source_sources:
                                 source_type = source['type']
                                 source_url = source['url']
                                 description = source['description']
@@ -1415,7 +1446,7 @@ Wood, R. (2008). Push Up Test: Home fitness tests. Topendsports.com. https://www
                     if i < len(results) - 1:
                         st.markdown("---")
             else:
-                st.warning("No references found. Please check your input format.")
+                st.warning("No references found. Please enter some references to verify.")
         
         elif verify_button:
             st.warning("Please enter some references to verify.")
