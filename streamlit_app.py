@@ -1,4 +1,10 @@
-import streamlit as st
+with col_a:
+            if st.button("🧪 Test Content Errors", use_container_width=True):
+                # Add test case with wrong journal name but correct DOI
+                content_error_test = "\n\nPrice, K. J. (2016). Cardiac rehabilitation guidelines. Journal of Sport, 23(16), 1715-1733. https://doi.org/10.1177/2047487316657669"
+                st.session_state.content_error_text = reference_text + content_error_test
+        
+        with col_bimport streamlit as st
 import re
 import requests
 import time
@@ -99,7 +105,261 @@ class JournalAbbreviationMatcher:
         
         return 0.0
 
-class EnhancedParser:
+class ContentConsistencyChecker:
+    """Checks for content inconsistencies between reference elements"""
+    
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+        self.timeout = 10
+
+    def check_content_consistency(self, elements: Dict) -> Dict:
+        """Check for content inconsistencies and mismatches"""
+        result = {
+            'is_consistent': True,
+            'content_errors': [],
+            'content_warnings': [],
+            'consistency_score': 1.0,
+            'verification_details': []
+        }
+        
+        if not elements:
+            return result
+        
+        ref_type = elements.get('reference_type', 'unknown')
+        
+        # Check DOI-Journal consistency for journals
+        if ref_type == 'journal' and elements.get('doi') and elements.get('journal'):
+            doi_consistency = self._check_doi_journal_consistency(
+                elements['doi'], elements['journal'], result
+            )
+            if not doi_consistency:
+                result['consistency_score'] -= 0.4
+        
+        # Check title-content consistency
+        if elements.get('title'):
+            title_consistency = self._check_title_content_consistency(elements, result)
+            if not title_consistency:
+                result['consistency_score'] -= 0.3
+        
+        # Check journal name validity
+        if ref_type == 'journal' and elements.get('journal'):
+            journal_validity = self._check_journal_validity(elements['journal'], result)
+            if not journal_validity:
+                result['consistency_score'] -= 0.3
+        
+        # Check volume/year consistency
+        if elements.get('year') and elements.get('volume'):
+            volume_year_consistency = self._check_volume_year_consistency(
+                elements['year'], elements['volume'], elements.get('journal'), result
+            )
+            if not volume_year_consistency:
+                result['consistency_score'] -= 0.2
+        
+        # Overall consistency assessment
+        result['is_consistent'] = len(result['content_errors']) == 0
+        result['consistency_score'] = max(0.0, result['consistency_score'])
+        
+        return result
+
+    def _check_doi_journal_consistency(self, doi: str, journal: str, result: Dict) -> bool:
+        """Check if DOI matches the claimed journal"""
+        try:
+            # Get DOI metadata from CrossRef
+            crossref_url = f"https://api.crossref.org/works/{doi}"
+            response = self.session.get(crossref_url, timeout=self.timeout)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'message' in data and 'container-title' in data['message']:
+                    actual_journal_list = data['message']['container-title']
+                    if actual_journal_list:
+                        actual_journal = actual_journal_list[0]
+                        
+                        # Calculate similarity between claimed and actual journal
+                        journal_matcher = JournalAbbreviationMatcher()
+                        similarity = journal_matcher.calculate_journal_similarity(
+                            journal, actual_journal
+                        )
+                        
+                        result['verification_details'].append(
+                            f"DOI points to: '{actual_journal}', Reference claims: '{journal}'"
+                        )
+                        
+                        if similarity < 0.6:  # Low similarity threshold
+                            result['content_errors'].append(
+                                f"Journal name mismatch: DOI is from '{actual_journal}' but reference claims '{journal}'"
+                            )
+                            return False
+                        elif similarity < 0.8:  # Medium similarity threshold
+                            result['content_warnings'].append(
+                                f"Possible journal name variation: DOI shows '{actual_journal}', reference shows '{journal}'"
+                            )
+                        else:
+                            result['verification_details'].append(
+                                f"Journal name matches DOI (similarity: {similarity:.2f})"
+                            )
+                        
+                        return True
+            
+            result['verification_details'].append("Could not verify journal name against DOI")
+            return True  # Don't penalize if we can't verify
+            
+        except Exception as e:
+            result['verification_details'].append(f"Journal-DOI consistency check failed: {str(e)}")
+            return True  # Don't penalize on errors
+
+    def _check_title_content_consistency(self, elements: Dict, result: Dict) -> bool:
+        """Check if title matches other content elements"""
+        title = elements.get('title', '')
+        doi = elements.get('doi')
+        
+        if not doi:
+            return True  # Can't check without DOI
+        
+        try:
+            # Get title from DOI
+            crossref_url = f"https://api.crossref.org/works/{doi}"
+            response = self.session.get(crossref_url, timeout=self.timeout)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'message' in data and 'title' in data['message']:
+                    actual_title_list = data['message']['title']
+                    if actual_title_list:
+                        actual_title = actual_title_list[0]
+                        
+                        # Calculate title similarity
+                        similarity = self._calculate_title_similarity(title, actual_title)
+                        
+                        result['verification_details'].append(
+                            f"DOI title: '{actual_title}', Reference title: '{title}'"
+                        )
+                        
+                        if similarity < 0.5:  # Low similarity threshold
+                            result['content_errors'].append(
+                                f"Title mismatch: DOI has title '{actual_title}' but reference claims '{title}'"
+                            )
+                            return False
+                        elif similarity < 0.7:  # Medium similarity threshold
+                            result['content_warnings'].append(
+                                f"Possible title variation: DOI shows '{actual_title}', reference shows '{title}'"
+                            )
+                        else:
+                            result['verification_details'].append(
+                                f"Title matches DOI (similarity: {similarity:.2f})"
+                            )
+                        
+                        return True
+            
+            return True  # Don't penalize if we can't verify
+            
+        except Exception as e:
+            result['verification_details'].append(f"Title consistency check failed: {str(e)}")
+            return True
+
+    def _check_journal_validity(self, journal: str, result: Dict) -> bool:
+        """Check if journal name exists in academic databases"""
+        try:
+            # Search CrossRef journals database
+            url = "https://api.crossref.org/journals"
+            params = {'query': journal, 'rows': 5}
+            
+            response = self.session.get(url, params=params, timeout=self.timeout)
+            if response.status_code == 200:
+                data = response.json()
+                
+                if 'message' in data and 'items' in data['message']:
+                    items = data['message']['items']
+                    
+                    if not items:
+                        result['content_warnings'].append(
+                            f"Journal '{journal}' not found in academic databases - may be non-existent or very new"
+                        )
+                        return False
+                    
+                    # Check if any journal has reasonable similarity
+                    journal_matcher = JournalAbbreviationMatcher()
+                    best_similarity = 0.0
+                    best_match = None
+                    
+                    for item in items:
+                        if 'title' in item:
+                            similarity = journal_matcher.calculate_journal_similarity(
+                                journal, item['title']
+                            )
+                            if similarity > best_similarity:
+                                best_similarity = similarity
+                                best_match = item['title']
+                    
+                    if best_similarity < 0.3:  # Very low similarity
+                        result['content_warnings'].append(
+                            f"Journal '{journal}' doesn't match any known journals. Did you mean '{best_match}'?"
+                        )
+                        return False
+                    elif best_similarity < 0.7:  # Medium similarity
+                        result['content_warnings'].append(
+                            f"Journal name may be incorrect. Similar journal found: '{best_match}'"
+                        )
+                    else:
+                        result['verification_details'].append(
+                            f"Journal name verified in database (best match: '{best_match}')"
+                        )
+                    
+                    return True
+            
+            return True  # Don't penalize if database is unavailable
+            
+        except Exception as e:
+            result['verification_details'].append(f"Journal validity check failed: {str(e)}")
+            return True
+
+    def _check_volume_year_consistency(self, year: str, volume: str, journal: str, result: Dict) -> bool:
+        """Check if volume number is reasonable for the publication year"""
+        try:
+            year_int = int(year)
+            volume_int = int(volume)
+            
+            # Basic sanity checks
+            if volume_int > 200:  # Very high volume number
+                result['content_warnings'].append(
+                    f"Volume {volume} seems unusually high for year {year}"
+                )
+                return False
+            
+            if year_int > 2000 and volume_int > (year_int - 1950):  # Rough heuristic
+                result['content_warnings'].append(
+                    f"Volume {volume} may be inconsistent with publication year {year}"
+                )
+                return False
+            
+            return True
+            
+        except (ValueError, TypeError):
+            return True  # Don't penalize if we can't parse numbers
+
+    def _calculate_title_similarity(self, title1: str, title2: str) -> float:
+        """Calculate similarity between two titles"""
+        if not title1 or not title2:
+            return 0.0
+        
+        # Normalize titles
+        norm1 = re.sub(r'[^\w\s]', ' ', title1.lower()).strip()
+        norm2 = re.sub(r'[^\w\s]', ' ', title2.lower()).strip()
+        
+        # Word-based similarity
+        words1 = set(word for word in norm1.split() if len(word) > 2)
+        words2 = set(word for word in norm2.split() if len(word) > 2)
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        intersection = words1.intersection(words2)
+        union = words1.union(words2)
+        
+        return len(intersection) / len(union)
     """Enhanced parser with comprehensive extraction and checking"""
     
     def __init__(self):
@@ -306,6 +566,10 @@ class EnhancedParser:
         result['is_compliant'] = len(result['errors']) == 0
         
         return result
+
+    def check_content_consistency(self, elements: Dict) -> Dict:
+        """Check content consistency using the content checker"""
+        return self.content_checker.check_content_consistency(elements)
 
 class EnhancedAuthenticityChecker:
     """Enhanced authenticity checker with multiple methods"""
@@ -555,18 +819,20 @@ class SyntaxCorrectedVerifier:
         return results
 
     def _process_reference(self, line: str, line_number: int, format_type: str) -> Dict:
-        """Process single reference"""
+        """Process single reference with content consistency checking"""
         result = {
             'reference': line,
             'line_number': line_number,
             'authenticity_status': 'unknown',
             'format_status': 'unknown',
+            'content_status': 'unknown',
             'overall_status': 'unknown',
             'confidence_score': 0.0,
             'reference_type': 'unknown',
             'extracted_elements': {},
             'authenticity_check': {},
             'format_check': {},
+            'content_check': {},
             'processing_errors': []
         }
         
@@ -587,16 +853,50 @@ class SyntaxCorrectedVerifier:
             if auth_result.get('is_authentic'):
                 result['authenticity_status'] = 'authentic'
                 
+                # Check content consistency (NEW!)
+                content_result = self.parser.check_content_consistency(elements)
+                result['content_check'] = content_result
+                
                 # Check format
                 format_result = self.parser.check_format_compliance(line)
                 result['format_check'] = format_result
                 
-                if format_result.get('is_compliant'):
-                    result['format_status'] = 'compliant'
-                    result['overall_status'] = 'valid'
+                # Determine statuses
+                has_content_errors = len(content_result.get('content_errors', [])) > 0
+                has_content_warnings = len(content_result.get('content_warnings', [])) > 0
+                has_format_errors = len(format_result.get('errors', [])) > 0
+                has_format_warnings = len(format_result.get('warnings', [])) > 0
+                
+                # Set content status
+                if has_content_errors:
+                    result['content_status'] = 'content_errors'
+                elif has_content_warnings:
+                    result['content_status'] = 'content_warnings'
                 else:
-                    result['format_status'] = 'format_issues'
-                    result['overall_status'] = 'authentic_but_poor_format'
+                    result['content_status'] = 'content_consistent'
+                
+                # Set format status
+                if has_format_errors:
+                    result['format_status'] = 'format_errors'
+                elif has_format_warnings:
+                    result['format_status'] = 'format_warnings'
+                else:
+                    result['format_status'] = 'format_compliant'
+                
+                # Determine overall status with priority: content errors > format errors
+                if has_content_errors:
+                    result['overall_status'] = 'authentic_with_content_errors'
+                elif has_content_warnings and has_format_errors:
+                    result['overall_status'] = 'authentic_with_content_and_format_issues'
+                elif has_content_warnings:
+                    result['overall_status'] = 'authentic_with_content_warnings'
+                elif has_format_errors:
+                    result['overall_status'] = 'authentic_with_format_errors'
+                elif has_format_warnings:
+                    result['overall_status'] = 'authentic_with_format_warnings'
+                else:
+                    result['overall_status'] = 'valid'
+                
             else:
                 result['authenticity_status'] = 'likely_fake'
                 result['overall_status'] = 'likely_fake'
@@ -647,12 +947,273 @@ def main():
         verify_button = st.button("✅ Run Corrected Verifier", type="primary", use_container_width=True)
         
         col_a, col_b = st.columns(2)
-        with col_a:
-            if st.button("📚 Add Test Cases", use_container_width=True):
-                test_cases = "\n\nSmith, J. A. (2020). Exercise benefits. Eur J Prev Cardiol, 27(1), 1-10.\n\nBrown, M. (2019). Sports medicine handbook. Human Kinetics."
-                st.session_state.test_text = reference_text + test_cases
-        
         with col_b:
+            if st.button("🔍 Test Format vs Content", use_container_width=True):
+                # Add test case showing difference between format and content issues
+                format_vs_content_test = "\n\nSmith, J, (2020). Exercise benefits. European Journal of Preventive Cardiology, 27(1), 1-10. https://doi.org/10.1177/validDOI123"
+                st.session_state.format_vs_content_text = reference_text + format_vs_content_test
+        
+        with st.expander("🎯 Content vs Format Error Examples"):
+            st.markdown("**🔴 Content Errors (More Serious):**")
+            st.markdown("• Wrong journal name with valid DOI")
+            st.markdown("• Mismatched title and DOI")
+            st.markdown("• Non-existent journal names")
+            st.markdown("• Incorrect volume/year combinations")
+            
+            st.markdown("**📝 Format Errors (Less Serious):**")
+            st.markdown("• Missing periods or commas")
+            st.markdown("• Wrong author name format")
+            st.markdown("• Incorrect citation style")
+            st.markdown("• Missing italics or spacing")
+            
+            st.markdown("**Why This Matters:**")
+            st.markdown("• Content errors suggest **academic dishonesty** or **careless copying**")
+            st.markdown("• Format errors are just **citation style** issues")
+            st.markdown("• Content errors are **much more serious** violations")
+    
+    with col2:
+        st.header("📊 Enhanced Results with Content Checking")
+        
+        # Handle test cases
+        if 'content_error_text' in st.session_state:
+            reference_text = st.session_state.content_error_text
+            del st.session_state.content_error_text
+            verify_button = True
+        elif 'format_vs_content_text' in st.session_state:
+            reference_text = st.session_state.format_vs_content_text
+            del st.session_state.format_vs_content_text
+            verify_button = True
+        elif 'test_text' in st.session_state:
+            reference_text = st.session_state.test_text
+            del st.session_state.test_text
+            verify_button = True
+        elif 'fuzzy_text' in st.session_state:
+            reference_text = st.session_state.fuzzy_text
+            del st.session_state.fuzzy_text
+            verify_button = True
+        
+        if verify_button and reference_text.strip():
+            with st.spinner("Running enhanced verification with content consistency checking..."):
+                verifier = SyntaxCorrectedVerifier()
+                results = verifier.verify_references(reference_text, format_type)
+            
+            if results:
+                # Enhanced summary metrics
+                total = len(results)
+                valid = sum(1 for r in results if r.get('overall_status') == 'valid')
+                content_errors = sum(1 for r in results if 'content_errors' in r.get('overall_status', ''))
+                format_issues = sum(1 for r in results if 'format_errors' in r.get('overall_status', '') or 'format_warnings' in r.get('overall_status', ''))
+                likely_fake = sum(1 for r in results if r.get('overall_status') == 'likely_fake')
+                avg_confidence = sum(r.get('confidence_score', 0) for r in results) / total if total > 0 else 0
+                
+                col_a, col_b, col_c, col_d, col_e = st.columns(5)
+                with col_a:
+                    st.metric("Total", total)
+                with col_b:
+                    st.metric("✅ Valid", valid)
+                with col_c:
+                    st.metric("🔴 Content Errors", content_errors)
+                with col_d:
+                    st.metric("📝 Format Issues", format_issues)
+                with col_e:
+                    st.metric("🚨 Likely Fake", likely_fake)
+                
+                st.markdown("---")
+                
+                # Enhanced result display
+                for result in results:
+                    ref_type = result.get('reference_type', 'unknown')
+                    type_icons = {'journal': '📄', 'book': '📚', 'website': '🌐', 'unknown': '❓'}
+                    type_icon = type_icons.get(ref_type, '❓')
+                    
+                    confidence = result.get('confidence_score', 0.0)
+                    confidence_emoji = "🟢" if confidence >= 0.8 else "🟡" if confidence >= 0.6 else "🔴"
+                    
+                    st.markdown(f"### {type_icon} Reference {result.get('line_number', 'N/A')} ({ref_type.title()}) {confidence_emoji} {confidence:.2f}")
+                    
+                    status = result.get('overall_status', 'unknown')
+                    
+                    # Enhanced status display with content error priority
+                    if status == 'valid':
+                        st.success("✅ **Valid Reference** - Authentic, accurate content, and properly formatted")
+                    elif status == 'authentic_with_content_errors':
+                        st.error("🔴 **Authentic but Content Errors** - Real DOI/source but incorrect details (journal name, title, etc.)")
+                    elif status == 'authentic_with_content_and_format_issues':
+                        st.error("🔴 **Content & Format Issues** - Real source but incorrect details AND formatting problems")
+                    elif status == 'authentic_with_content_warnings':
+                        st.warning("🟡 **Authentic with Content Warnings** - Real source but possible detail inconsistencies")
+                    elif 'format_errors' in status:
+                        st.warning("📝 **Authentic but Format Errors** - Real reference with citation style violations")
+                    elif 'format_warnings' in status:
+                        st.info("📝 **Authentic with Format Warnings** - Real reference with minor style issues")
+                    elif status == 'likely_fake':
+                        st.error("🚨 **Likely Fake Reference** - Could not verify authenticity")
+                    elif status == 'processing_error':
+                        st.error("🐛 **Processing Error** - Error during verification")
+                    else:
+                        st.info(f"❓ **Status**: {status}")
+                    
+                    # Show content consistency results (NEW!)
+                    content_check = result.get('content_check', {})
+                    content_errors_list = content_check.get('content_errors', [])
+                    content_warnings_list = content_check.get('content_warnings', [])
+                    
+                    if content_errors_list or content_warnings_list:
+                        with st.expander("🔍 Content Consistency Analysis"):
+                            consistency_score = content_check.get('consistency_score', 1.0)
+                            st.markdown(f"**Content Consistency Score**: {consistency_score:.2f}")
+                            
+                            if content_errors_list:
+                                st.markdown("**🔴 Content Errors:**")
+                                for error in content_errors_list:
+                                    st.markdown(f"  • {error}")
+                                st.markdown("*These indicate the reference details don't match the actual source.*")
+                            
+                            if content_warnings_list:
+                                st.markdown("**🟡 Content Warnings:**")
+                                for warning in content_warnings_list:
+                                    st.markdown(f"  • {warning}")
+                                st.markdown("*These suggest possible inconsistencies that should be double-checked.*")
+                            
+                            verification_details = content_check.get('verification_details', [])
+                            if verification_details:
+                                st.markdown("**🔍 Verification Details:**")
+                                for detail in verification_details:
+                                    st.markdown(f"  • {detail}")
+                    
+                    # Show verification details
+                    auth_check = result.get('authenticity_check', {})
+                    verification_details = auth_check.get('verification_details', [])
+                    methods_used = auth_check.get('methods_used', [])
+                    sources_checked = auth_check.get('sources_checked', [])
+                    
+                    if verification_details:
+                        st.markdown("**🔍 Authenticity Verification:**")
+                        for detail in verification_details:
+                            st.markdown(f"  • {detail}")
+                        
+                        if methods_used:
+                            st.markdown(f"  • **Methods**: {', '.join(methods_used)}")
+                        
+                        if sources_checked:
+                            st.markdown(f"  • **Sources**: {', '.join(sources_checked)}")
+                    
+                    # Show format issues
+                    format_check = result.get('format_check', {})
+                    format_errors = format_check.get('errors', [])
+                    format_warnings = format_check.get('warnings', [])
+                    suggestions = format_check.get('suggestions', [])
+                    
+                    if format_errors or format_warnings:
+                        with st.expander("📝 Format Analysis"):
+                            if format_errors:
+                                st.markdown("**🔴 Critical Format Errors:**")
+                                for error in format_errors:
+                                    st.markdown(f"  • {error}")
+                            
+                            if format_warnings:
+                                st.markdown("**🟡 Format Warnings:**")
+                                for warning in format_warnings:
+                                    st.markdown(f"  • {warning}")
+                            
+                            if suggestions:
+                                st.markdown("**💡 Suggestions:**")
+                                for suggestion in suggestions:
+                                    st.markdown(f"  • {suggestion}")
+                    
+                    # Show extraction details
+                    with st.expander("🔍 Extraction Results"):
+                        elements = result.get('extracted_elements', {})
+                        confidence_val = elements.get('confidence', 0.0)
+                        
+                        st.markdown(f"**Extraction Confidence**: {confidence_val:.2f}")
+                        
+                        st.markdown("**✅ Successfully Extracted:**")
+                        extracted_count = 0
+                        for key, value in elements.items():
+                            if value and key not in ['extraction_errors', 'reference_type', 'confidence']:
+                                st.markdown(f"  • **{key.title()}**: `{value}`")
+                                extracted_count += 1
+                        
+                        if extracted_count == 0:
+                            st.markdown("  • No elements successfully extracted")
+                        
+                        # Show extraction errors
+                        extraction_errors = elements.get('extraction_errors', [])
+                        if extraction_errors:
+                            st.markdown("**⚠️ Extraction Issues:**")
+                            for error in extraction_errors:
+                                st.markdown(f"  • {error}")
+                        
+                        # Show processing errors
+                        processing_errors = result.get('processing_errors', [])
+                        if processing_errors:
+                            st.markdown("**🐛 Processing Errors:**")
+                            for error in processing_errors:
+                                st.markdown(f"  • {error}")
+                    
+                    # Show debug information
+                    debug_info = auth_check.get('debug_info', [])
+                    if debug_info:
+                        with st.expander("🔧 Debug Information"):
+                            for debug in debug_info:
+                                st.markdown(f"  • {debug}")
+                    
+                    # Show original reference
+                    with st.expander("📄 Original Reference"):
+                        ref_text = result.get('reference', 'No reference text available')
+                        st.code(ref_text, language="text")
+                    
+                    st.markdown("---")
+        
+        elif verify_button:
+            st.warning("Please enter some references to analyze.")
+    
+    with st.expander("🎯 Content Consistency Features"):
+        st.markdown("""
+        ### **🔍 New Content Consistency Checking:**
+        
+        #### **🔴 Content Errors (Critical Issues):**
+        - **DOI-Journal Mismatch**: DOI points to different journal than claimed
+        - **Title Mismatch**: DOI has different title than reference claims
+        - **Non-existent Journals**: Journal name not found in academic databases
+        - **Impossible Combinations**: Volume numbers inconsistent with publication year
+        
+        #### **🟡 Content Warnings (Suspicious Issues):**
+        - **Journal Name Variations**: Possible spelling errors or unofficial names
+        - **Partial Title Matches**: Title similar but not exactly matching DOI
+        - **Volume/Year Inconsistencies**: Unusual combinations that may be errors
+        
+        #### **🎯 Why This Matters:**
+        
+        **Content Errors vs Format Errors:**
+        ```
+        📝 Format Error: "Smith, J, (2020)" → Minor citation style issue
+        🔴 Content Error: DOI says "Nature" but claims "Journal of Sport" → Serious academic violation
+        ```
+        
+        **Academic Integrity:**
+        - **Content errors** suggest copying errors, falsification, or academic dishonesty
+        - **Format errors** are just citation style issues that can be easily fixed
+        - Content errors are **much more serious** and require investigation
+        
+        **Example Detection:**
+        ```
+        Reference: "...Journal of Sport... https://doi.org/10.1177/2047487316657669"
+        DOI Check: This DOI actually points to "European Journal of Preventive Cardiology"
+        Result: 🔴 Content Error - Journal name mismatch
+        ```
+        
+        **Verification Process:**
+        1. Extract DOI and reference details
+        2. Query CrossRef API to get actual publication info
+        3. Compare claimed details vs actual details
+        4. Flag mismatches as content errors
+        5. Distinguish from simple formatting issues
+        """)
+
+if __name__ == "__main__":
+    main():
             if st.button("🔍 Test Fuzzy Matching", use_container_width=True):
                 fuzzy_test = "\n\nJones, P. (2021). Guidelines for cardiac rehab exercise programs. European Journal of Preventive Cardiology, 28(5), 500-510."
                 st.session_state.fuzzy_text = reference_text + fuzzy_test
@@ -679,7 +1240,8 @@ def main():
                 # Summary metrics
                 total = len(results)
                 valid = sum(1 for r in results if r.get('overall_status') == 'valid')
-                authentic_issues = sum(1 for r in results if 'authentic_but_poor_format' in r.get('overall_status', ''))
+                content_errors = sum(1 for r in results if 'content_errors' in r.get('overall_status', ''))
+                format_issues = sum(1 for r in results if 'format_errors' in r.get('overall_status', '') or 'format_warnings' in r.get('overall_status', ''))
                 likely_fake = sum(1 for r in results if r.get('overall_status') == 'likely_fake')
                 avg_confidence = sum(r.get('confidence_score', 0) for r in results) / total if total > 0 else 0
                 
@@ -689,11 +1251,11 @@ def main():
                 with col_b:
                     st.metric("✅ Valid", valid)
                 with col_c:
-                    st.metric("⚠️ Format Issues", authentic_issues)
+                    st.metric("🔴 Content Errors", content_errors)
                 with col_d:
-                    st.metric("🚨 Likely Fake", likely_fake)
+                    st.metric("📝 Format Issues", format_issues)
                 with col_e:
-                    st.metric("📊 Avg Confidence", f"{avg_confidence:.2f}")
+                    st.metric("🚨 Likely Fake", likely_fake)
                 
                 st.markdown("---")
                 
@@ -710,17 +1272,53 @@ def main():
                     
                     status = result.get('overall_status', 'unknown')
                     
-                    # Status display
+                    # Status display with content error priority
                     if status == 'valid':
-                        st.success("✅ **Valid Reference** - Authentic and properly formatted")
-                    elif 'authentic_but_poor_format' in status:
-                        st.warning("⚠️ **Authentic but Poor Format** - Real reference with formatting issues")
+                        st.success("✅ **Valid Reference** - Authentic, accurate content, and properly formatted")
+                    elif status == 'authentic_with_content_errors':
+                        st.error("🔴 **Authentic but Content Errors** - Real DOI/source but incorrect details (journal name, title, etc.)")
+                    elif status == 'authentic_with_content_and_format_issues':
+                        st.error("🔴 **Content & Format Issues** - Real source but incorrect details AND formatting problems")
+                    elif status == 'authentic_with_content_warnings':
+                        st.warning("🟡 **Authentic with Content Warnings** - Real source but possible detail inconsistencies")
+                    elif 'format_errors' in status:
+                        st.warning("📝 **Authentic but Format Errors** - Real reference with citation style violations")
+                    elif 'format_warnings' in status:
+                        st.info("📝 **Authentic with Format Warnings** - Real reference with minor style issues")
                     elif status == 'likely_fake':
                         st.error("🚨 **Likely Fake Reference** - Could not verify authenticity")
                     elif status == 'processing_error':
                         st.error("🐛 **Processing Error** - Error during verification")
                     else:
                         st.info(f"❓ **Status**: {status}")
+                    
+                    # Show content consistency results (NEW!)
+                    content_check = result.get('content_check', {})
+                    content_errors = content_check.get('content_errors', [])
+                    content_warnings = content_check.get('content_warnings', [])
+                    
+                    if content_errors or content_warnings:
+                        with st.expander("🔍 Content Consistency Analysis"):
+                            consistency_score = content_check.get('consistency_score', 1.0)
+                            st.markdown(f"**Content Consistency Score**: {consistency_score:.2f}")
+                            
+                            if content_errors:
+                                st.markdown("**🔴 Content Errors:**")
+                                for error in content_errors:
+                                    st.markdown(f"  • {error}")
+                                st.markdown("*These indicate the reference details don't match the actual source.*")
+                            
+                            if content_warnings:
+                                st.markdown("**🟡 Content Warnings:**")
+                                for warning in content_warnings:
+                                    st.markdown(f"  • {warning}")
+                                st.markdown("*These suggest possible inconsistencies that should be double-checked.*")
+                            
+                            verification_details = content_check.get('verification_details', [])
+                            if verification_details:
+                                st.markdown("**🔍 Verification Details:**")
+                                for detail in verification_details:
+                                    st.markdown(f"  • {detail}")
                     
                     # Show verification details
                     auth_check = result.get('authenticity_check', {})
