@@ -190,7 +190,74 @@ def _verify_existence(self, elements: Dict) -> Dict:
                     })
         
         return results
-import streamlit as st
+
+    def _show_verification_details(self, result: Dict, ref_type: str):
+        """Show type-specific verification details for valid references"""
+        existence = result['existence_check']
+        search_details = existence.get('search_details', {})
+        
+        if ref_type == 'journal':
+            # Show DOI details for journals
+            doi_details = search_details.get('doi')
+            if doi_details and doi_details.get('valid'):
+                with st.expander("📋 DOI Verification Details"):
+                    st.write(f"**Actual Title:** {doi_details.get('actual_title', 'N/A')}")
+                    if doi_details.get('title_similarity'):
+                        st.write(f"**Title Match Confidence:** {doi_details['title_similarity']:.1%}")
+                    st.write(f"**Authors:** {', '.join(doi_details.get('actual_authors', []))}")
+                    st.write(f"**Journal:** {doi_details.get('actual_journal', 'N/A')}")
+                    st.write(f"**Year:** {doi_details.get('actual_year', 'N/A')}")
+                    if doi_details.get('crossref_url'):
+                        st.markdown(f"**Crossref API:** [{doi_details['crossref_url']}]({doi_details['crossref_url']})")
+        
+        elif ref_type == 'book':
+            # Show enhanced book verification details
+            google_books = search_details.get('google_books')
+            isbn_search = search_details.get('isbn_search')
+            
+            if google_books and google_books.get('found'):
+                with st.expander("📚 Google Books Verification Details"):
+                    st.write(f"**Verified Title:** {google_books.get('matched_title', 'N/A')}")
+                    st.write(f"**Authors:** {', '.join(google_books.get('matched_authors', []))}")
+                    st.write(f"**Publisher:** {google_books.get('matched_publisher', 'N/A')}")
+                    st.write(f"**Year:** {google_books.get('matched_year', 'N/A')}")
+                    if google_books.get('matched_isbns'):
+                        st.write(f"**ISBNs:** {', '.join(google_books['matched_isbns'])}")
+                    st.write(f"**Match Confidence:** {google_books.get('match_score', 0):.1%}")
+            
+            if isbn_search and isbn_search.get('found'):
+                with st.expander("📖 ISBN Verification Details"):
+                    st.write(f"**Verified Title:** {isbn_search.get('title', 'N/A')}")
+                    st.write(f"**Authors:** {', '.join(isbn_search.get('authors', []))}")
+                    st.write(f"**ISBN:** {isbn_search.get('isbn', 'N/A')}")
+        
+        elif ref_type == 'website':
+            # Show website verification details
+            website_details = search_details.get('website_check')
+            if website_details and website_details.get('accessible'):
+                with st.expander("🌐 Website Verification Details"):
+                    st.write(f"**Page Title:** {website_details.get('page_title', 'N/A')}")
+                    st.write(f"**Final URL:** {website_details.get('final_url', 'N/A')}")
+                    st.write(f"**Status Code:** {website_details.get('status_code', 'N/A')}")
+                    st.write(f"**Content Type:** {website_details.get('content_type', 'N/A')}")
+
+    def _show_content_warning_details(self, result: Dict, ref_type: str):
+        """Show why content has warnings based on reference type"""
+        existence = result['existence_check']
+        search_details = existence.get('search_details', {})
+        
+        if ref_type == 'journal':
+            if 'comprehensive' in search_details:
+                comp_result = search_details['comprehensive']
+                if 'match_score' in comp_result:
+                    st.write(f"**Match confidence:** {comp_result['match_score']:.1%} (below threshold)")
+        
+        elif ref_type == 'book':
+            google_books = search_details.get('google_books', {})
+            if 'match_score' in google_books:
+                st.write(f"**Book match confidence:** {google_books['match_score']:.1%} (below threshold)")
+            if google_books.get('total_results', 0) > 0:
+                st.write(f"**Search found {google_books['total_results']} potential matches, but none were close enough**")import streamlit as st
 import re
 import requests
 import time
@@ -827,8 +894,48 @@ class DatabaseSearcher:
             
         except requests.exceptions.RequestException as e:
             return {'found': False, 'reason': f'Network error during comprehensive search: {str(e)}'}
-        except Exception as e:
-            return {'found': False, 'reason': f'Comprehensive search error: {str(e)}'}
+    def _calculate_comprehensive_match_score(self, item: Dict, target_title: str, target_authors: str, target_year: str, target_journal: str) -> float:
+        """Calculate comprehensive match score"""
+        score = 0.0
+        
+        # Title matching (60% weight)
+        if 'title' in item and item['title'] and target_title:
+            item_title = item['title'][0] if isinstance(item['title'], list) else str(item['title'])
+            title_sim = self._calculate_title_similarity(target_title, item_title)
+            score += title_sim * 0.6
+        
+        # Author matching (30% weight)
+        if 'author' in item and item['author'] and target_authors:
+            item_authors = []
+            for author in item['author']:
+                if 'family' in author:
+                    item_authors.append(author['family'].lower())
+            
+            target_surnames = []
+            for author in re.split(r'[,&]', target_authors):
+                author_clean = re.sub(r'[^\w\s]', '', author).strip()
+                if author_clean:
+                    surname = author_clean.split()[-1].lower()
+                    if len(surname) > 2:
+                        target_surnames.append(surname)
+            
+            if item_authors and target_surnames:
+                common_authors = set(item_authors).intersection(set(target_surnames))
+                author_score = len(common_authors) / max(len(target_surnames), 1)
+                score += author_score * 0.3
+        
+        # Year matching (10% weight)
+        if target_year:
+            item_year = None
+            if 'published-print' in item and 'date-parts' in item['published-print']:
+                item_year = str(item['published-print']['date-parts'][0][0])
+            elif 'published-online' in item and 'date-parts' in item['published-online']:
+                item_year = str(item['published-online']['date-parts'][0][0])
+            
+            if item_year and item_year == target_year:
+                score += 0.1
+        
+        return score
 
     def search_books_isbn(self, isbn: str) -> Dict:
         if not isbn:
@@ -1122,6 +1229,93 @@ class DatabaseSearcher:
                 score += 0.1  # Partial credit for close years
         
         return score
+
+    def search_comprehensive(self, authors: str, title: str, year: str, journal: str) -> Dict:
+        try:
+            # Build comprehensive search query
+            query_parts = []
+            
+            if title:
+                # Use significant words from title (minimum 4 characters)
+                title_words = re.findall(r'\b[a-zA-Z]{4,}\b', title)[:5]  # Top 5 significant words
+                query_parts.extend(title_words)
+            
+            if authors:
+                # Extract author surnames
+                author_parts = re.split(r'[,&]|et al\.?', authors)[:3]  # Max 3 authors
+                for author in author_parts:
+                    author_clean = re.sub(r'[^\w\s]', '', author).strip()
+                    if author_clean:
+                        # Get the surname (usually last word)
+                        surname = author_clean.split()[-1]
+                        if len(surname) > 2:
+                            query_parts.append(surname)
+            
+            if not query_parts:
+                return {'found': False, 'reason': 'Insufficient search terms extracted'}
+            
+            query = " ".join(query_parts)
+            
+            # Search Crossref with comprehensive query
+            url = "https://api.crossref.org/works"
+            params = {
+                'query': query,
+                'rows': 25,  # More results for better matching
+                'select': 'title,author,published-print,published-online,container-title,short-container-title,DOI,URL'
+            }
+            
+            # Add year filter if provided
+            if year:
+                params['filter'] = f'from-pub-date:{year},until-pub-date:{year}'
+            
+            response = self.session.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            if 'message' in data and 'items' in data['message']:
+                items = data['message']['items']
+                best_match = None
+                best_score = 0
+                
+                # Evaluate each result with comprehensive scoring
+                for item in items:
+                    score = self._calculate_comprehensive_match_score(item, title, authors, year, journal)
+                    if score > best_score:
+                        best_score = score
+                        best_match = item
+                
+                # Require minimum 60% confidence for acceptance
+                if best_score > 0.6:
+                    source_url = None
+                    if 'DOI' in best_match:
+                        source_url = f"https://doi.org/{best_match['DOI']}"
+                    elif 'URL' in best_match:
+                        source_url = best_match['URL']
+                    
+                    return {
+                        'found': True,
+                        'match_score': best_score,
+                        'matched_title': best_match.get('title', ['Unknown'])[0] if best_match.get('title') else 'Unknown',
+                        'matched_doi': best_match.get('DOI'),
+                        'source_url': source_url,
+                        'crossref_url': f"https://api.crossref.org/works/{best_match['DOI']}" if best_match.get('DOI') else None,
+                        'total_results': len(items)
+                    }
+                else:
+                    return {
+                        'found': False,
+                        'reason': f'No high-confidence matches found (best score: {best_score:.1%}, threshold: 60%)',
+                        'total_results': len(items),
+                        'search_query': query
+                    }
+            
+            return {'found': False, 'reason': 'No search results'}
+            
+        except requests.exceptions.RequestException as e:
+            return {'found': False, 'reason': f'Network error during comprehensive search: {str(e)}'}
+        except Exception as e:
+            return {'found': False, 'reason': f'Comprehensive search error: {str(e)}'}
 
     def validate_book_url_content(self, url: str, expected_book_info: Dict) -> Dict:
         """Validate that a URL actually relates to the book being referenced"""
